@@ -1,3 +1,4 @@
+# main.py
 import threading
 import time
 import asyncio
@@ -9,43 +10,68 @@ connections = {}
 
 async def handle_peer_connections():
     """
-    Establishes connections with the discovered peers and starts monitoring them
+    Establishes connections with discovered peers and starts monitoring them
     """
     while True:
-        await asyncio.sleep(5) # do not use time.sleep() inside async method
+        await asyncio.sleep(5)
         for peer_ip in peer_list:
-          if peer_ip not in connections or not connections[peer_ip]:
-            print(f"Trying to connect to {peer_ip}")
-            connection = await connect_to_peer(peer_ip)
+            if peer_ip not in connections or not connections[peer_ip]:
+                print(f"Trying to connect to {peer_ip}")
+                connection = await connect_to_peer(peer_ip)
+                if connection:
+                    connections[peer_ip] = connection
+                    # Start a receive handler for this connection
+                    asyncio.create_task(handle_messages(peer_ip, connection))
+
+async def handle_messages(peer_ip, connection):
+    """
+    Handles incoming messages from a specific peer
+    """
+    try:
+        while True:
+            message = await receive_message(connection)
+            if message:
+                print(f"\nMessage from {peer_ip}: {message}")
+                print("Enter your message: ", end='', flush=True)
+    except Exception as e:
+        print(f"Lost connection to {peer_ip}: {e}")
+        if peer_ip in connections:
+            del connections[peer_ip]
+
+async def chat_input():
+    """
+    Handles user input for chat messages
+    """
+    while True:
+        message = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: input("Enter your message: ")
+        )
+        if message.lower() == 'exit':
+            break
+            
+        # Send the message to all connected peers
+        for peer_ip, connection in connections.items():
             if connection:
-                connections[peer_ip] = connection
+                sent = await send_message(connection, message)
+                if not sent:
+                    print(f"Failed to send message to {peer_ip}")
 
-async def send_and_receive_test():
-  """
-  Tries to send and receive test messages
-  """
-  while True:
-    await asyncio.sleep(10) # do not use time.sleep() inside async method
-    for peer_ip, connection in connections.items():
-      if connection:
-        print(f"Sending test message to {peer_ip}")
-        sent = await send_message(connection, "Test Message")
-        if sent:
-          response = await receive_message(connection)
-          if response:
-            print(f"Received response from {peer_ip}: {response}")
-
-
-if __name__ == "__main__":
-    # Start a thread that continuously sends broadcasts
+if _name_ == "_main_":
+    # Start broadcast threads
     broadcast_thread = threading.Thread(target=send_broadcasts, daemon=True)
     broadcast_thread.start()
-    # Start a thread that continuously receives broadcasts
+    
     discovery_thread = threading.Thread(target=receive_broadcasts, args=(peer_list,), daemon=True)
     discovery_thread.start()
 
-    # Start Async event loop for handling connections
+    # Start async event loop for handling connections and chat
     async def main():
-      await asyncio.gather(handle_peer_connections(), send_and_receive_test())
+        await asyncio.gather(
+            handle_peer_connections(),
+            chat_input()
+        )
 
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nShutting down...")
