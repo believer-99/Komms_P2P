@@ -1,7 +1,7 @@
-# main.py
 import threading
 import time
 import asyncio
+import sys
 from networking.discovery import receive_broadcasts, send_broadcasts
 from networking.connection import connect_to_peer, send_message, receive_message
 
@@ -39,24 +39,25 @@ async def handle_messages(peer_ip, connection):
             del connections[peer_ip]
 
 async def chat_input():
-    """
-    Handles user input for chat messages
-    """
-    while True:
-        message = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: input("Enter your message: ")
-        )
-        if message.lower() == 'exit':
-            break
-            
-        # Send the message to all connected peers
-        for peer_ip, connection in connections.items():
-            if connection:
-                sent = await send_message(connection, message)
-                if not sent:
-                    print(f"Failed to send message to {peer_ip}")
+  """
+  Handles user input for chat messages asynchronously.
+  """
+  loop = asyncio.get_event_loop() # Get the event loop to use with sys.stdin
+  while True:
+      print("Enter your message: ", end='', flush=True)  # Prompt before input
+      message = await loop.run_in_executor(None, sys.stdin.readline) # Read user input from sys.stdin asynchronusly
+      message = message.strip() # remove the new line character
+      if message.lower() == 'exit':
+          break
 
-if __name__ == "__main__":
+      # Send the message to all connected peers
+      for peer_ip, connection in connections.items():
+          if connection:
+              sent = await send_message(connection, message)
+              if not sent:
+                  print(f"Failed to send message to {peer_ip}")
+
+if _name_ == "_main_":
     # Start broadcast threads
     broadcast_thread = threading.Thread(target=send_broadcasts, daemon=True)
     broadcast_thread.start()
