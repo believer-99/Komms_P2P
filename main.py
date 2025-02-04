@@ -3,13 +3,14 @@ import threading
 from networking.discovery import receive_broadcasts, send_broadcasts
 from networking.connection import connect_to_peer, send_message, receive_message
 import websockets
+import time
 
 peer_list = []
 connections = {}
 
 async def handle_peer_connection(websocket, path):
     peer_ip = websocket.remote_address[0]
-    print(f"New connection from {peer_ip}")
+    print(f"\nNew connection from {peer_ip}")
     connections[peer_ip] = websocket
     
     try:
@@ -24,6 +25,9 @@ async def handle_peer_connection(websocket, path):
             print(f"\nLost connection to {peer_ip}")
 
 def list_peers():
+    if not connections:
+        print("No peers connected")
+        return
     for i, peer in enumerate(connections.keys(), 1):
         print(f"{i}. {peer}")
 
@@ -40,8 +44,20 @@ async def connect_to_peers():
                     print(f"Failed to connect to {peer_ip}: {e}")
 
 async def user_input():
+    # Wait for initial peer discovery
+    while not connections:
+        print("\rWaiting for peers to connect...", end='', flush=True)
+        await asyncio.sleep(1)
+    
+    print("\nPeers found! Starting chat...")
+    
     while True:
         try:
+            if not connections:
+                print("\rWaiting for peers to connect...", end='', flush=True)
+                await asyncio.sleep(1)
+                continue
+                
             print("\nAvailable peers:")
             list_peers()
             print("Enter recipient number (or 'all') and message: ", end='', flush=True)
