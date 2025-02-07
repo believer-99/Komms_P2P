@@ -1,5 +1,15 @@
 import asyncio
 import websockets
+import logging
+import sys
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    stream=sys.stdout,
+)
+
 
 async def connect_to_peer(peer_ip, port=8765):
     """
@@ -15,11 +25,12 @@ async def connect_to_peer(peer_ip, port=8765):
     uri = f"ws://{peer_ip}:{port}"
     try:
         websocket = await websockets.connect(uri)
-        print(f"Successfully connected to {peer_ip}")
+        logging.info(f"Successfully connected to {peer_ip}")
         return websocket
     except Exception as e:
-        print(f"Failed to connect to {peer_ip}: {e}")
+        logging.error(f"Failed to connect to {peer_ip}: {e}")
         return None
+
 
 async def send_message(websocket, message):
     """
@@ -33,14 +44,16 @@ async def send_message(websocket, message):
         bool: True if success else false
     """
     if not websocket:
-      print("Websocket connection is not valid, could not send message")
-      return False
+        logging.error("Websocket connection is not valid, could not send message")
+        return False
     try:
         await websocket.send(message)
         return True
     except Exception as e:
-      print(f"Error sending message: {e}")
-      return False
+        logging.error(f"Error sending message: {e}")
+        return False
+
+
 async def receive_message(websocket):
     """
     Receives a text message from a peer through a WebSocket.
@@ -52,11 +65,11 @@ async def receive_message(websocket):
         str: Received message
     """
     if not websocket:
-      print("Websocket connection is not valid, could not receive message")
-      return False
+        logging.error("Websocket connection is not valid, could not receive message")
+        return False
     try:
-       message = await websocket.recv()
-       return message
+        message = await websocket.recv()
+        return message
     except Exception as e:
-        print(f"Error receiving message {e}")
+        logging.error(f"Error receiving message {e}")
         return False
