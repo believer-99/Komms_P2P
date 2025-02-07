@@ -150,8 +150,8 @@ async def main():
     discovery_thread.start()
 
     async with websockets.serve(handle_peer_connection, "0.0.0.0", 8765) as server:
-    logging.info("WebSocket server started")
-    await asyncio.gather(connect_to_peers(), user_input(), display_messages())
+        logging.info("WebSocket server started")
+        await asyncio.gather(connect_to_peers(), user_input(), display_messages())
 
 
 
