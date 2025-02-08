@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from networking.messaging import connections  # Import connections dictionary
 
 async def send_file(file_path: str):
     """Send a file to connected peers."""
