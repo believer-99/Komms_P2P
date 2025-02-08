@@ -22,7 +22,7 @@ async def connect_to_peers():
                         connections[peer_ip] = websocket
                         # Start receiving messages from this peer
                         asyncio.create_task(receive_peer_messages(websocket, peer_ip))
-            
+
             await asyncio.sleep(5)  # Wait before next connection attempt
         except Exception as e:
             logging.error(f"Error in connect_to_peers: {e}")
@@ -37,20 +37,27 @@ async def receive_peer_messages(websocket, peer_ip):
         logging.info(f"Connection closed to {peer_ip}")
         if peer_ip in connections:
             del connections[peer_ip]
+    except Exception as e:
+        logging.error(f"Error receiving messages from {peer_ip}: {e}")
     finally:
         logging.info(f"Stopped receiving messages from {peer_ip}")
+        if peer_ip in connections:
+            del connections[peer_ip]
 
 async def display_messages():
     """Asynchronously displays messages from the queue."""
     while True:
-        peer_ip, message = await message_queue.get()  # Get message from queue
-        if message.startswith("FILE "):  # Handle file transfer messages
-            _, file_name, file_size = message.split(" ")
-            print(f"\nReceiving file '{file_name}' from {peer_ip}")
-            await receive_file(connections[peer_ip], file_name, int(file_size))
-        else:
-            print(f"\n{peer_ip}: {message}")  # Display the message
-        message_queue.task_done()
+        try:
+            peer_ip, message = await message_queue.get()  # Get message from queue
+            if message.startswith("FILE "):  # Handle file transfer messages
+                _, file_name, file_size = message.split(" ")
+                print(f"\nReceiving file '{file_name}' from {peer_ip}")
+                await receive_file(connections[peer_ip], file_name, int(file_size))
+            else:
+                print(f"\n{peer_ip}: {message}")  # Display the message
+            message_queue.task_done()
+        except Exception as e:
+            logging.error(f"Error displaying message: {e}")
 
 async def user_input():
     """Handle user input for sending messages or files."""
@@ -104,6 +111,7 @@ async def user_input():
                     print(f"Sent to {peer_ip}")
                 except Exception as e:
                     logging.error(f"Failed to send to {peer_ip}: {e}")
+                    #Removing the peer_ip from the connection in case it was closed.
                     if peer_ip in connections:
                         del connections[peer_ip]
                     print(f"Failed to send to {peer_ip}")
