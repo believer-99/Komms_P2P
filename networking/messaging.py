@@ -1,6 +1,9 @@
 import asyncio
 import logging
+import websockets
+from aioconsole import ainput
 
+# Shared state
 message_queue = asyncio.Queue()  # Queue for incoming messages
 connections = {}  # Dictionary to hold active connections
 
