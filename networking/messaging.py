@@ -1,11 +1,32 @@
+# networking/messaging.py
 import asyncio
 import logging
 import websockets
 from aioconsole import ainput
+from networking.connection import connect_to_peer
 
 # Shared state
 message_queue = asyncio.Queue()  # Queue for incoming messages
 connections = {}  # Dictionary to hold active connections
+peer_list = []  # List to store discovered peers
+
+async def connect_to_peers():
+    """Continuously attempts to connect to discovered peers."""
+    while True:
+        try:
+            # Try to connect to all discovered peers that we're not already connected to
+            for peer_ip in peer_list[:]:  # Create a copy of the list to iterate
+                if peer_ip not in connections:
+                    websocket = await connect_to_peer(peer_ip)
+                    if websocket:
+                        connections[peer_ip] = websocket
+                        # Start receiving messages from this peer
+                        asyncio.create_task(receive_peer_messages(websocket, peer_ip))
+            
+            await asyncio.sleep(5)  # Wait before next connection attempt
+        except Exception as e:
+            logging.error(f"Error in connect_to_peers: {e}")
+            await asyncio.sleep(5)  # Wait before retrying
 
 async def receive_peer_messages(websocket, peer_ip):
     """Receives messages from a peer and puts them in the message queue."""
@@ -23,9 +44,13 @@ async def display_messages():
     """Asynchronously displays messages from the queue."""
     while True:
         peer_ip, message = await message_queue.get()  # Get message from queue
-        logging.info(f"Message from {peer_ip}: {message}")
-        print(f"\n{peer_ip}: {message}")  # Display the message
-        message_queue.task_done()  # Indicate that the task is complete
+        if message.startswith("FILE "):  # Handle file transfer messages
+            _, file_name, file_size = message.split(" ")
+            print(f"\nReceiving file '{file_name}' from {peer_ip}")
+            await receive_file(connections[peer_ip], file_name, int(file_size))
+        else:
+            print(f"\n{peer_ip}: {message}")  # Display the message
+        message_queue.task_done()
 
 async def user_input():
     """Handle user input for sending messages or files."""
@@ -37,7 +62,7 @@ async def user_input():
                 continue
 
             await display_peers_and_prompt()
-            user_input_str = await aioconsole.ainput()
+            user_input_str = await ainput()
 
             if not user_input_str:
                 continue
