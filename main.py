@@ -1,18 +1,16 @@
 import asyncio
-import threading
 import logging
 import sys
 import websockets
 
 from networking.discovery import receive_broadcasts, send_broadcasts
-#from networking.connection import connect_to_peer # Removed connect_to_peer import
 from networking.messaging import (
     user_input,
     display_messages,
-    connect_to_peers, # Connect to peers is what the code is using 
+    connect_to_peers,
     receive_peer_messages,
     connections,
-    peer_list  # Import peer_list from messaging
+    peer_list
 )
 from networking.file_transfer import send_file, receive_file
 
@@ -30,8 +28,7 @@ async def handle_peer_connection(websocket, path=None):
 
 async def main():
     """Main function to run the P2P chat application."""
-    # Start broadcast threads with proper arguments
-    # Start broadcast threads with proper arguments
+    # Start broadcast tasks
     broadcast_task = asyncio.create_task(send_broadcasts())
     discovery_task = asyncio.create_task(receive_broadcasts(peer_list))
 

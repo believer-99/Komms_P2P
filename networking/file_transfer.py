@@ -1,6 +1,8 @@
 import asyncio
 import logging
-from networking.messaging import connections  # Import connections dictionary
+
+# Define connections dictionary here if not imported
+connections = {}  # This will be shared with messaging.py
 
 async def send_file(file_path: str):
     """Send a file to connected peers."""
@@ -15,12 +17,14 @@ async def send_file(file_path: str):
             file_size = len(file_data)
 
             # Send file metadata first
-            for peer_ip in connections.keys():
-                await connections[peer_ip].send(f"FILE {file_name} {file_size}")
-
-                # Send the file data
-                await connections[peer_ip].send(file_data)
-                print(f"Sent file '{file_name}' to {peer_ip}")
+            for peer_ip in list(connections.keys()):  # Create a copy of keys to iterate
+                try:
+                    await connections[peer_ip].send(f"FILE {file_name} {file_size}")
+                    # Send the file data
+                    await connections[peer_ip].send(file_data)
+                    print(f"Sent file '{file_name}' to {peer_ip}")
+                except Exception as e:
+                    logging.error(f"Error sending file to {peer_ip}: {e}")
 
     except Exception as e:
         logging.error(f"Error sending file: {e}")
