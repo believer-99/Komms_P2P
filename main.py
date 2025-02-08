@@ -1,3 +1,4 @@
+# main.py
 import asyncio
 import threading
 import logging
@@ -6,8 +7,14 @@ import websockets
 
 from networking.discovery import receive_broadcasts, send_broadcasts
 from networking.connection import connect_to_peer
-from networking.messaging import user_input, display_messages, connect_to_peers
-from networking.file_transfer import send_file, receive_file  # Import file transfer functions
+from networking.messaging import (
+    user_input, 
+    display_messages, 
+    connect_to_peers, 
+    receive_peer_messages,
+    connections  # Import the connections dictionary
+)
+from networking.file_transfer import send_file, receive_file
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s", stream=sys.stdout)
