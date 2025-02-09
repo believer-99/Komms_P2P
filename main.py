@@ -38,11 +38,11 @@ async def main():
 
     # Start WebSocket server
     server = await websockets.serve(
-        handle_peer_connection,
-        "0.0.0.0",
-        8765,
-        ping_interval=20,
-        ping_timeout=10
+    handle_peer_connection,
+    "0.0.0.0",
+    8765,
+    ping_interval=None,  # Disable ping to prevent timeouts during large transfers
+    max_size=None,  # Remove message size limit
     )
     logging.info("WebSocket server started")
 

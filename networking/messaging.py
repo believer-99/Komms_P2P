@@ -19,8 +19,8 @@ async def connect_to_peer(peer_ip, port=8765):
     try:
         websocket = await websockets.connect(
             uri,
-            ping_interval=20,
-            ping_timeout=10
+            ping_interval=None,  # Disable ping
+            max_size=None,  # Remove message size limit
         )
         own_ip = await get_own_ip()
         await websocket.send(f"INIT {own_ip}")
@@ -112,16 +112,15 @@ async def receive_peer_messages(websocket, peer_ip):
     try:
         while True:
             message = await websocket.recv()
-            
+
             if message.startswith("FILE "):
                 try:
-                    _, file_name, file_size = message.split(" ", 2)
-                    await receive_file(websocket, file_name, int(file_size))
+                    _, file_name, file_size, start_byte = message.split(" ", 3)
+                    await receive_file(websocket, file_name, int(file_size), int(start_byte))
                 except Exception as e:
                     logging.error(f"Error receiving file: {e}")
             elif message.startswith("MESSAGE "):
                 await message_queue.put(f"{peer_ip}: {message[8:]}")
-                
     except websockets.exceptions.ConnectionClosed:
         logging.info(f"Connection closed with {peer_ip}")
     except Exception as e:
@@ -130,6 +129,7 @@ async def receive_peer_messages(websocket, peer_ip):
         if peer_ip in connections:
             del connections[peer_ip]
         logging.info(f"Disconnected from {peer_ip}")
+
 
 async def get_own_ip():
     """Get the IP address of the current machine."""
