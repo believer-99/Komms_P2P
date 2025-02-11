@@ -1,14 +1,13 @@
 import asyncio
-import threading
 import logging
 import sys
 import websockets
 
-from networking.discovery import receive_broadcasts, send_broadcasts
+from networking.discovery import PeerDiscovery
 from networking.messaging import (
     user_input,
     display_messages,
-    connect_to_peers,
+    connect_to_peer,
     receive_peer_messages,
     handle_incoming_connection,
     connections,
@@ -27,23 +26,26 @@ async def handle_peer_connection(websocket, path=None):
     """Handles incoming connections from websockets.serve."""
     peer_ip = websocket.remote_address[0]
     logging.info(f"New connection from {peer_ip}")
-    
+
     if await handle_incoming_connection(websocket, peer_ip):
         await receive_peer_messages(websocket, peer_ip)
 
 async def main():
     """Main function to run the P2P chat application."""
+    # Initialize PeerDiscovery
+    discovery = PeerDiscovery()
+
     # Start broadcast tasks
-    broadcast_task = asyncio.create_task(send_broadcasts())
-    discovery_task = asyncio.create_task(receive_broadcasts(peer_list))
+    broadcast_task = asyncio.create_task(discovery.send_broadcasts())
+    discovery_task = asyncio.create_task(discovery.receive_broadcasts())
 
     # Start WebSocket server
     server = await websockets.serve(
-    handle_peer_connection,
-    "0.0.0.0",
-    8765,
-    ping_interval=None,  # Disable ping to prevent timeouts during large transfers
-    max_size=None,  # Remove message size limit
+        handle_peer_connection,
+        "0.0.0.0",
+        8765,
+        ping_interval=None,  # Disable ping to prevent timeouts during large transfers
+        max_size=None,  # Remove message size limit
     )
     logging.info("WebSocket server started")
 
