@@ -35,7 +35,7 @@ async def connect_to_peer(peer_ip, port=8765):
             return None
             
     except Exception as e:
-        logging.error(f"Failed to connect to {peer_ip}: {e}")
+        logging.exception(f"Failed to connect to {peer_ip}: {e}")
         return None
 
 async def handle_incoming_connection(websocket, peer_ip):
@@ -56,7 +56,7 @@ async def handle_incoming_connection(websocket, peer_ip):
                 await websocket.close()
                 return False
     except Exception as e:
-        logging.error(f"Error in connection handshake: {e}")
+        logging.exception(f"Error in connection handshake: {e}")
         return False
 
 async def connect_to_peers():
@@ -71,7 +71,7 @@ async def connect_to_peers():
                         asyncio.create_task(receive_peer_messages(websocket, peer_ip))
             await asyncio.sleep(5)
         except Exception as e:
-            logging.error(f"Error in connect_to_peers: {e}")
+            logging.exception(f"Error in connect_to_peers: {e}")
             await asyncio.sleep(5)
 
 async def user_input():
@@ -97,14 +97,14 @@ async def user_input():
                     try:
                         await websocket.send(f"MESSAGE {message}")
                     except Exception as e:
-                        logging.error(f"Error sending to {peer_ip}: {e}")
+                        logging.exception(f"Error sending to {peer_ip}: {e}")
                         if peer_ip in connections:
                             del connections[peer_ip]
             else:
                 print("No peers connected to send message to.")
                 
         except Exception as e:
-            logging.error(f"Error in user_input: {e}")
+            logging.exception(f"Error in user_input: {e}")
             await asyncio.sleep(1)
 
 async def receive_peer_messages(websocket, peer_ip):
@@ -118,13 +118,13 @@ async def receive_peer_messages(websocket, peer_ip):
                     _, file_name, file_size, start_byte = message.split(" ", 3)
                     await receive_file(websocket, file_name, int(file_size), int(start_byte))
                 except Exception as e:
-                    logging.error(f"Error receiving file: {e}")
+                    logging.exception(f"Error receiving file: {e}")
             elif message.startswith("MESSAGE "):
                 await message_queue.put(f"{peer_ip}: {message[8:]}")
     except websockets.exceptions.ConnectionClosed:
         logging.info(f"Connection closed with {peer_ip}")
     except Exception as e:
-        logging.error(f"Error receiving from {peer_ip}: {e}")
+        logging.exception(f"Error receiving from {peer_ip}: {e}")
     finally:
         if peer_ip in connections:
             del connections[peer_ip]
@@ -150,5 +150,5 @@ async def display_messages():
             print(f"\n{message}")
             print("> ", end="", flush=True)
         except Exception as e:
-            logging.error(f"Error displaying message: {e}")
+            logging.exception(f"Error displaying message: {e}")
             await asyncio.sleep(1)
