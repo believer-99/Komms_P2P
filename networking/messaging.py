@@ -14,7 +14,7 @@ async def connect_to_peer(peer_ip, port=8765):
     """Establishes a WebSocket connection to a peer."""
     if peer_ip in connections:
         return None
-        
+
     uri = f"ws://{peer_ip}:{port}"
     try:
         websocket = await websockets.connect(
@@ -24,7 +24,7 @@ async def connect_to_peer(peer_ip, port=8765):
         )
         own_ip = await get_own_ip()
         await websocket.send(f"INIT {own_ip}")
-        
+
         # Wait for INIT response
         response = await websocket.recv()
         if response.startswith("INIT_ACK"):
@@ -33,7 +33,7 @@ async def connect_to_peer(peer_ip, port=8765):
         else:
             await websocket.close()
             return None
-            
+
     except Exception as e:
         logging.exception(f"Failed to connect to {peer_ip}: {e}")
         return None
@@ -45,7 +45,7 @@ async def handle_incoming_connection(websocket, peer_ip):
         if message.startswith("INIT "):
             _, sender_ip = message.split(" ", 1)
             own_ip = await get_own_ip()
-            
+
             # Only accept connection if we don't already have one
             if peer_ip not in connections:
                 await websocket.send("INIT_ACK")
@@ -59,7 +59,7 @@ async def handle_incoming_connection(websocket, peer_ip):
         logging.exception(f"Error in connection handshake: {e}")
         return False
 
-async def connect_to_peers():
+async def connect_to_peers(peer_list):
     """Continuously attempts to connect to discovered peers."""
     while True:
         try:
@@ -79,19 +79,19 @@ async def user_input():
     while True:
         try:
             message = await ainput("> ")
-            
+
             if message.startswith("/send "):
                 file_path = message[6:].strip()
                 if not file_path:
                     print("Usage: /send <file_path>")
                     continue
-                    
+
                 if connections:
                     await send_file(file_path, connections)
                 else:
                     print("No peers connected to send file to.")
                 continue
-                
+
             if connections:
                 for peer_ip, websocket in list(connections.items()):
                     try:
@@ -102,7 +102,7 @@ async def user_input():
                             del connections[peer_ip]
             else:
                 print("No peers connected to send message to.")
-                
+
         except Exception as e:
             logging.exception(f"Error in user_input: {e}")
             await asyncio.sleep(1)

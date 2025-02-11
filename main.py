@@ -7,11 +7,10 @@ from networking.discovery import PeerDiscovery
 from networking.messaging import (
     user_input,
     display_messages,
-    connect_to_peer,
+    connect_to_peers,
     receive_peer_messages,
     handle_incoming_connection,
-    connections,
-    peer_list
+    connections
 )
 from networking.file_transfer import send_file, receive_file
 
@@ -51,7 +50,7 @@ async def main():
 
     try:
         await asyncio.gather(
-            connect_to_peers(),
+            connect_to_peers(discovery.peer_list),
             user_input(),
             display_messages(),
             broadcast_task,

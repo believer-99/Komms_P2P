@@ -35,7 +35,7 @@ class PeerDiscovery:
                 except BlockingIOError:
                     await asyncio.sleep(0.1)
                 except Exception as e:
-                    logging.error(f"Error in receive_broadcasts: {e}")
+                    logging.exception(f"Error in receive_broadcasts: {e}")
                     await asyncio.sleep(1)
         finally:
             sock.close()
@@ -57,7 +57,7 @@ class PeerDiscovery:
                 except BlockingIOError:
                     await asyncio.sleep(0.1)
                 except Exception as e:
-                    logging.error(f"Error sending broadcast: {e}")
+                    logging.exception(f"Error sending broadcast: {e}")
                     await asyncio.sleep(1)
         finally:
             sock.close()

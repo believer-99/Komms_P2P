@@ -49,7 +49,7 @@ async def send_file(file_path: str, connections: dict):
                     print(f"\nSuccessfully sent file '{file_name}' to {peer_ip}")
 
                 except Exception as e:
-                    logging.error(f"Error sending file to {peer_ip}: {e}")
+                    logging.exception(f"Error sending file to {peer_ip}: {e}")
                     # Try to gracefully close the connection
                     try:
                         await websocket.close()
@@ -59,7 +59,7 @@ async def send_file(file_path: str, connections: dict):
     except FileNotFoundError:
         logging.error(f"File not found at path: {file_path}")
     except Exception as e:
-        logging.error(f"Error reading file: {e}")
+        logging.exception(f"Error reading file: {e}")
 
 async def receive_file(websocket, file_name, file_size, start_byte=0):
     try:
@@ -81,10 +81,10 @@ async def receive_file(websocket, file_name, file_size, start_byte=0):
                     print(f"\rProgress: {progress:.2f}%", end="", flush=True)
 
                 except Exception as e:
-                    logging.error(f"Error during file receive: {e}")
+                    logging.exception(f"Error during file receive: {e}")
                     break
 
             print(f"\nFile saved as: {file_path}")
 
     except Exception as e:
-        logging.error(f"Error receiving file: {e}")
+        logging.exception(f"Error receiving file: {e}")
