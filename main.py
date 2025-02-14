@@ -12,7 +12,7 @@ from networking.messaging import (
     handle_incoming_connection,
     connections
 )
-from networking.file_transfer import send_file, receive_file
+# from networking.file_transfer import send_file, receive_file  # Remove this line
 
 # Configure logging
 logging.basicConfig(
