@@ -3,12 +3,13 @@ import logging
 import websockets
 import socket
 from aioconsole import ainput
-from networking.file_transfer import send_file, receive_file
+from networking.file_transfer import file_transfer_manager, FileTransferManager
 
 # Shared state
 message_queue = asyncio.Queue()
 connections = {}
 peer_list = []
+
 
 async def connect_to_peer(peer_ip, port=8765):
     """Establishes a WebSocket connection to a peer."""
@@ -38,6 +39,7 @@ async def connect_to_peer(peer_ip, port=8765):
         logging.exception(f"Failed to connect to {peer_ip}: {e}")
         return None
 
+
 async def handle_incoming_connection(websocket, peer_ip):
     """Handle new incoming connection setup."""
     try:
@@ -59,6 +61,7 @@ async def handle_incoming_connection(websocket, peer_ip):
         logging.exception(f"Error in connection handshake: {e}")
         return False
 
+
 async def connect_to_peers(peer_list):
     """Continuously attempts to connect to discovered peers."""
     while True:
@@ -74,6 +77,7 @@ async def connect_to_peers(peer_list):
             logging.exception(f"Error in connect_to_peers: {e}")
             await asyncio.sleep(5)
 
+
 async def user_input():
     """Handles user input and sends messages to all connected peers."""
     help_text = """
@@ -84,11 +88,11 @@ Available commands:
 /transfers - List all transfers and their status
 /help - Show this help message
 """
-    
+
     while True:
         try:
             message = await ainput("> ")
-            
+
             if message.startswith("/"):
                 parts = message.split(maxsplit=1)
                 command = parts[0]
@@ -97,7 +101,7 @@ Available commands:
                 if command == "/help":
                     print(help_text)
                     continue
-                    
+
                 elif command == "/transfers":
                     transfers = file_transfer_manager.list_transfers()
                     if not transfers:
@@ -106,46 +110,50 @@ Available commands:
                         print("\nCurrent Transfers:")
                         print("-" * 50)
                         for file_id, state in transfers.items():
-                            progress = len(state.get('sent_chunks', set())) / state['total_chunks'] * 100
-                            status = state['status'].upper()
+                            progress = (
+                                len(state.get("sent_chunks", set()))
+                                / state["total_chunks"]
+                                * 100
+                            )
+                            status = state["status"].upper()
                             print(f"File: {file_id}")
                             print(f"Status: {status}")
                             print(f"Progress: {progress:.1f}%")
                             print("-" * 50)
                     continue
-                    
+
                 elif command == "/pause":
                     if not args:
                         print("Usage: /pause <file_name>")
                         continue
-                    
+
                     found = False
                     for file_id in list(file_transfer_manager.active_transfers.keys()):
                         if args in file_id:
                             await file_transfer_manager.pause_transfer(file_id)
                             found = True
                             break
-                    
+
                     if not found:
                         print(f"No active transfer found for '{args}'")
                     continue
-                    
+
                 elif command == "/resume":
                     if not args:
                         print("Usage: /resume <file_name>")
                         continue
-                    
+
                     found = False
                     for file_id in list(file_transfer_manager.paused_transfers.keys()):
                         if args in file_id:
                             await file_transfer_manager.resume_transfer(file_id)
                             found = True
                             break
-                    
+
                     if not found:
                         print(f"No paused transfer found for '{args}'")
                     continue
-                    
+
                 elif command == "/send":
                     if not args:
                         print("Usage: /send <file_path>")
@@ -157,7 +165,7 @@ Available commands:
                     else:
                         print("No peers connected to send file to.")
                     continue
-            
+
             # Handle regular messages (existing code)
             if connections:
                 for peer_ip, websocket in list(connections.items()):
@@ -169,11 +177,12 @@ Available commands:
                             del connections[peer_ip]
             else:
                 print("No peers connected to send message to.")
-                
+
         except Exception as e:
             logging.exception(f"Error in user_input: {e}")
             await asyncio.sleep(1)
-            
+
+
 async def receive_peer_messages(websocket, peer_ip):
     """Receives and processes messages from a connected peer."""
     try:
@@ -183,7 +192,7 @@ async def receive_peer_messages(websocket, peer_ip):
             if message.startswith("FILE "):
                 try:
                     _, file_name, file_size, start_byte = message.split(" ", 3)
-                    await receive_file(websocket, file_name, int(file_size), int(start_byte))
+                    await file_transfer_manager.receive_file(websocket, message)
                 except Exception as e:
                     logging.exception(f"Error receiving file: {e}")
             elif message.startswith("MESSAGE "):
@@ -208,6 +217,7 @@ async def get_own_ip():
         return ip
     except Exception:
         return "127.0.0.1"
+
 
 async def display_messages():
     """Displays messages from the message queue."""
