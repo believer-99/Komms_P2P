@@ -50,8 +50,9 @@ class FileTransferManager:
                 _, received_chunks = response.split(" ", 1)
                 received_set = set(int(x) for x in received_chunks.split(",") if x)
                 transfer_state['sent_chunks'] = received_set
-                bytes_done = len(received_set) * self.chunk_size
-                progress.update(min(bytes_done, file_size))
+                bytes_done = sum(min(self.chunk_size, file_size - i * self.chunk_size) 
+                              for i in received_set)
+                progress.update(bytes_done)
 
             async with aiofiles.open(file_path, mode='rb') as file:
                 chunk_index = 0
@@ -63,35 +64,31 @@ class FileTransferManager:
                         continue
 
                     if chunk_index not in transfer_state['sent_chunks']:
+                        current_chunk_size = min(self.chunk_size, file_size - bytes_sent)
                         await file.seek(chunk_index * self.chunk_size)
-                        async def chunk_generator(file, chunk_size): # Added stream data with chunk size
-                            while True:
-                                part = await file.read(chunk_size)
-                                if not part:
-                                    break
-                                yield part
-
-                        chunk_hash = None
-                        full_chunk = bytearray()
-                        chunk_hashes = [] # append each part into this array, to verify parts with parts on the receive function
-                        async for part in chunk_generator(file, 1024): # yield the chunk in 1024 bits
-                            chunk_hash_temp = self._calculate_chunk_hash(part) # temporary chunk data
-                            chunk_hashes.append(chunk_hash_temp) # append chunk temporary data
-                            full_chunk.extend(part)
-                            #await websocket.send(part) # remove sending each part as the part has to be hashed first
-
-                        full_chunk_bytes = bytes(full_chunk)
-                        chunk_hash = self._calculate_chunk_hash(full_chunk_bytes) # hash the full data that was in the yield
-                        await websocket.send(f"CHUNK {chunk_index} {chunk_hash} {','.join(chunk_hashes)}") # Sends the hash of the chunk before sending the data, include chunk hashes
-                        await websocket.send(full_chunk_bytes)  # remove sending each part, it has to send the full thing after the yield
+                        
+                        full_chunk = await file.read(current_chunk_size)
+                        chunk_hash = self._calculate_chunk_hash(full_chunk)
+                        
+                        # Split the full chunk into smaller parts for hashing
+                        chunk_hashes = []
+                        for i in range(0, len(full_chunk), 1024):
+                            part = full_chunk[i:i+1024]
+                            part_hash = self._calculate_chunk_hash(part)
+                            chunk_hashes.append(part_hash)
+                        
+                        # Send chunk metadata and data
+                        await websocket.send(f"CHUNK {chunk_index} {chunk_hash} {','.join(chunk_hashes)}")
+                        await websocket.send(full_chunk)
 
                         ack = await websocket.recv()
                         if ack == f"ACK {chunk_index}":
                             transfer_state['sent_chunks'].add(chunk_index)
-                            bytes_sent += len(full_chunk_bytes)
+                            bytes_sent += len(full_chunk)
                             progress.update(bytes_sent)
                     else:
-                        bytes_sent += min(self.chunk_size, file_size - bytes_sent)
+                        current_chunk_size = min(self.chunk_size, file_size - chunk_index * self.chunk_size)
+                        bytes_sent += current_chunk_size
                         progress.update(bytes_sent)
 
                     chunk_index += 1
@@ -101,7 +98,7 @@ class FileTransferManager:
 
             await websocket.send("FILE_END")
             print(f"\nSuccessfully sent file '{file_name}' to {peer_ip}")
-            #remove transfer when successful
+            # Remove transfer when successful
             if file_id in self.active_transfers:
                 del self.active_transfers[file_id]
 
@@ -113,7 +110,12 @@ class FileTransferManager:
 
     async def receive_file(self, websocket, initial_message: str):
         try:
-            _, file_name, file_size, chunk_size = initial_message.split(" ")
+            parts = initial_message.split(" ")
+            if len(parts) < 4:
+                logging.error(f"Invalid FILE_START message: {initial_message}")
+                return False
+                
+            _, file_name, file_size, chunk_size = parts
             file_size = int(file_size)
             chunk_size = int(chunk_size)
 
@@ -136,8 +138,9 @@ class FileTransferManager:
             await websocket.send(f"RESUME {','.join(map(str, received_chunks))}")
 
             async with aiofiles.open(file_path, mode='ab' if received_chunks else 'wb') as f:
-                bytes_received = len(received_chunks) * chunk_size
-
+                bytes_received = sum(min(chunk_size, file_size - i * chunk_size) 
+                                   for i in received_chunks)
+                
                 while True:
                     message = await websocket.recv()
 
@@ -145,28 +148,33 @@ class FileTransferManager:
                         break
 
                     if message.startswith("CHUNK"):
-                        parts = message.split(" ", 2)
-                        _, chunk_index, expected_hash_and_parts = parts
+                        parts = message.split(" ", 3)
+                        if len(parts) < 4:
+                            logging.error(f"Invalid CHUNK message: {message}")
+                            await websocket.send("RESEND")
+                            continue
+                            
+                        _, chunk_index, expected_hash, expected_hashes_str = parts
                         chunk_index = int(chunk_index)
-
-                        expected_hash, expected_hashes_str = expected_hash_and_parts.rsplit(" ", 1)  # Split to get both hashes
-                        expected_hashes = expected_hashes_str.split(',') # Split at "," to put inside the array to verify
+                        expected_hashes = expected_hashes_str.split(',')
 
                         chunk = await websocket.recv()
                         actual_hash = self._calculate_chunk_hash(chunk)
 
-                        async def chunk_generator(chunk, chunk_size):
-                            for i in range(0, len(chunk), chunk_size):
-                                yield chunk[i:i + chunk_size]
+                        # Verify the individual parts
+                        actual_hashes = []
+                        for i in range(0, len(chunk), 1024):
+                            part = chunk[i:i+1024]
+                            actual_hash_part = self._calculate_chunk_hash(part)
+                            actual_hashes.append(actual_hash_part)
 
-                        actual_hashes = [] # append the parts into the array
-                        index = 0 # index of yield
-                        async for part in chunk_generator(chunk, 1024): # append the chunks with 1024 bits
-                            actual_hash_temp = self._calculate_chunk_hash(part)
-                            actual_hashes.append(actual_hash_temp)
-                            index += 1
+                        # Check if the number of hashes matches
+                        if len(actual_hashes) != len(expected_hashes):
+                            logging.error(f"Chunk {chunk_index} hash count mismatch. Expected {len(expected_hashes)}, got {len(actual_hashes)}")
+                            await websocket.send(f"RESEND {chunk_index}")
+                            continue
 
-                        if actual_hash == expected_hash and actual_hashes == expected_hashes: # verify the chunks and parts
+                        if actual_hash == expected_hash and all(a == b for a, b in zip(actual_hashes, expected_hashes)):
                             if chunk_index not in received_chunks:
                                 await f.seek(chunk_index * chunk_size)
                                 await f.write(chunk)
@@ -174,10 +182,13 @@ class FileTransferManager:
                                 bytes_received += len(chunk)
                                 progress.update(bytes_received)
                                 await websocket.send(f"ACK {chunk_index}")
+                            else:
+                                # Already received this chunk, just ACK it
+                                await websocket.send(f"ACK {chunk_index}")
                         else:
                             logging.error(f"Chunk {chunk_index} hash mismatch")
-                            await websocket.send(f"RESEND {chunk_index}") # Request resend
-                            continue  # Get the next chunk and come back here
+                            await websocket.send(f"RESEND {chunk_index}")
+                            continue
 
             print(f"\nFile saved as: {file_path}")
 

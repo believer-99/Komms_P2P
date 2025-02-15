@@ -57,26 +57,35 @@ async def handle_incoming_connection(websocket, peer_ip):
                 await websocket.send("INIT_ACK")
                 connections[peer_ip] = websocket
                 logging.info(f"Accepted connection from {peer_ip}")
-                # Create send queue for each peer
-                send_queues[peer_ip] = asyncio.Queue()
-                # Start receiver and sender tasks
-                asyncio.create_task(receive_peer_messages(websocket, peer_ip))
+                
+                # Create send queue for each peer if it doesn't exist
+                if peer_ip not in send_queues:
+                    send_queues[peer_ip] = asyncio.Queue()
+                
+                # Start sender task only (receiver is started in main.py)
                 asyncio.create_task(send_peer_messages(websocket, peer_ip))
                 return True
             else:
                 await websocket.close()
                 return False
+        return False
     except Exception as e:
         logging.exception(f"Error in connection handshake: {e}")
         # Remove peer from connections if handshake fails
         if peer_ip in connections:  # check if its in connections
             del connections[peer_ip]  # deletes it from connections
+        if peer_ip in send_queues:  # check if there's a queue
+            del send_queues[peer_ip]  # delete the queue too
         return False
 
 
 async def send_peer_messages(websocket: websockets.WebSocketClientProtocol, peer_ip: str):
     """Consumes messages from the send queue and sends them to the peer."""
     try:
+        # Ensure the queue exists
+        if peer_ip not in send_queues:
+            send_queues[peer_ip] = asyncio.Queue()
+            
         while True:
             message_type, data = await send_queues[peer_ip].get()
             if message_type == "MESSAGE":
@@ -86,6 +95,8 @@ async def send_peer_messages(websocket: websockets.WebSocketClientProtocol, peer
                     logging.exception(f"Error sending message to {peer_ip}: {e}")
                     if peer_ip in connections:
                         del connections[peer_ip]
+                        if peer_ip in send_queues:
+                            del send_queues[peer_ip]
                         break  # Exit the loop as the connection is broken
 
             elif message_type == "FILE":
@@ -99,13 +110,16 @@ async def send_peer_messages(websocket: websockets.WebSocketClientProtocol, peer
     except Exception as e:
         logging.exception(f"Error in send_peer_messages: {e}")
     finally:
-        # (Cleanup is done during disconnection to remove peers and queues)
-        if peer_ip in connections:  # Check if peer still is in connections
-            del connections[peer_ip]  # Deletes it from connections dictionary
-        if peer_ip in send_queues:  # Check if there is a queue for the peer
-            del send_queues[peer_ip]  # Deletes the queue for the peer.
-        logging.info(f"Disconnected from {peer_ip} (sender)")  # Logging statement from original
-        await websocket.close()  # Cleanly close the websocket.
+        # Cleanup connections and queues
+        if peer_ip in connections:
+            del connections[peer_ip]
+        if peer_ip in send_queues:
+            del send_queues[peer_ip]
+        logging.info(f"Disconnected from {peer_ip} (sender)")
+        try:
+            await websocket.close()
+        except:
+            pass  # Ignore errors when closing already closed websocket
 
 
 async def receive_peer_messages(websocket, peer_ip):
@@ -115,10 +129,21 @@ async def receive_peer_messages(websocket, peer_ip):
         while True:
             message = await websocket.recv()
 
-            if receiving_file:
+            if message.startswith("FILE_START"):
+                try:
+                    receiving_file = True  # Set flag before receiving file
+                    await file_transfer_manager.receive_file(websocket, message)
+                    receiving_file = False  # Reset flag after receiving file
+                except Exception as e:
+                    logging.exception(f"Error receiving file: {e}")
+                    receiving_file = False  # Reset flag if initial file setup fails
+
+            elif receiving_file:
                 if message.startswith("CHUNK"):
                     try:
-                        await file_transfer_manager.receive_file(websocket, message)
+                        # This is handled by the first file_transfer_manager.receive_file call
+                        # which will keep reading messages until FILE_END
+                        pass
                     except Exception as e:
                         logging.exception(f"Error receiving file chunk: {e}")
                         receiving_file = False  # Ensure flag is reset in case of an error
@@ -127,15 +152,6 @@ async def receive_peer_messages(websocket, peer_ip):
                 else:
                     logging.warning(f"Ignoring message during file transfer: {message}")
                     continue  # Skip processing, wait for a valid message
-
-            elif message.startswith("FILE_START"):
-                try:
-                    receiving_file = True  # Set flag before receiving file
-                    await file_transfer_manager.receive_file(websocket, message)
-                    receiving_file = False  # Reset flag after receiving file
-                except Exception as e:
-                    logging.exception(f"Error receiving file: {e}")
-                    receiving_file = False  # Reset flag if initial file setup fails
 
             elif message.startswith("MESSAGE "):
                 await message_queue.put(f"{peer_ip}: {message[8:]}")
@@ -150,6 +166,8 @@ async def receive_peer_messages(websocket, peer_ip):
     finally:
         if peer_ip in connections:
             del connections[peer_ip]
+        if peer_ip in send_queues:
+            del send_queues[peer_ip]
         receiving_file = False  # Ensure flag is reset upon websocket close
         logging.info(f"Disconnected from {peer_ip} (receiver)")
 
@@ -182,17 +200,18 @@ async def connect_to_peers(peer_list):
     """Continuously attempts to connect to discovered peers."""
     while True:
         try:
-            for peer_ip in list(peer_list): # changed from peer_list[:]
+            for peer_ip in list(peer_list): 
                 if peer_ip not in connections:
                     websocket = await connect_to_peer(peer_ip)
                     if websocket:
                         connections[peer_ip] = websocket
-                        # Create send queue for each peer
-                        # Remove receive_peer_messages from here as its started during handshake
-                        # asyncio.create_task(receive_peer_messages(websocket, peer_ip)) # No start here
-                        # asyncio.create_task(send_peer_messages(websocket, peer_ip)) # No start here
-
-                        pass  # Tasks already launched in handle_incoming_connection
+                        # Create send queue for peer if not exists
+                        if peer_ip not in send_queues:
+                            send_queues[peer_ip] = asyncio.Queue()
+                        # Start send_peer_messages task
+                        asyncio.create_task(send_peer_messages(websocket, peer_ip))
+                        # Start receive_peer_messages task
+                        asyncio.create_task(receive_peer_messages(websocket, peer_ip))
 
             await asyncio.sleep(5)
         except Exception as e:
@@ -281,15 +300,23 @@ Available commands:
 
                     if connections:
                         for peer_ip in list(connections.keys()):  # Iterate through peer IPs
-                            await send_queues[peer_ip].put(("FILE", args))  # Add file transfer request to queue
+                            if peer_ip in send_queues:
+                                await send_queues[peer_ip].put(("FILE", args))  # Add file transfer request to queue
+                            else:
+                                send_queues[peer_ip] = asyncio.Queue()
+                                await send_queues[peer_ip].put(("FILE", args))
                     else:
                         print("No peers connected to send file to.")
                     continue
 
-            # Handle regular messages (existing code)
+            # Handle regular messages
             if connections:
                 for peer_ip in list(connections.keys()):
-                    await send_queues[peer_ip].put(("MESSAGE", message))
+                    if peer_ip in send_queues:
+                        await send_queues[peer_ip].put(("MESSAGE", message))
+                    else:
+                        send_queues[peer_ip] = asyncio.Queue()
+                        await send_queues[peer_ip].put(("MESSAGE", message))
             else:
                 print("No peers connected to send message to.")
 
