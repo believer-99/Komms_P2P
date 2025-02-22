@@ -7,7 +7,6 @@ from networking.discovery import PeerDiscovery
 from networking.messaging import (
     user_input,
     display_messages,
-    connect_to_peers,
     receive_peer_messages,
     handle_incoming_connection,
     connections

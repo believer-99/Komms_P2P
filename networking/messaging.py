@@ -2,6 +2,7 @@ import asyncio
 import logging
 import websockets
 import socket
+import os
 from aioconsole import ainput
 from networking.file_transfer import send_file, receive_file
 
@@ -60,18 +61,18 @@ async def handle_incoming_connection(websocket, peer_ip):
         return False
 
 async def maintain_peer_list():
-    """Periodically clean up disconnected peers"""
+    """Periodically clean up disconnected peers."""
     while True:
         try:
             # Remove dead connections
             for peer_ip in list(connections.keys()):
                 if connections[peer_ip].closed:
                     del connections[peer_ip]
-            
+
             # Update peer list from discovery
             global peer_list
             peer_list = discovery.peer_list.copy()
-            
+
             await asyncio.sleep(5)
         except Exception as e:
             logging.exception(f"Error in maintain_peer_list: {e}")
@@ -83,31 +84,30 @@ async def user_input():
         try:
             message = await ainput("> ")
 
-            # Add new connection management commands
             if message == "/list":
                 print("\nAvailable peers:")
                 for peer in peer_list:
                     status = "Connected" if peer in connections else "Available"
                     print(f"- {peer} ({status})")
                 continue
-                
+
             if message.startswith("/connect "):
                 peer_ip = message[9:].strip()
                 if peer_ip == await get_own_ip():
                     print("Cannot connect to self")
                     continue
-                    
+
                 if peer_ip in connections:
                     print(f"Already connected to {peer_ip}")
                     continue
-                    
+
                 print(f"Attempting connection to {peer_ip}...")
                 websocket = await connect_to_peer(peer_ip)
                 if websocket:
                     connections[peer_ip] = websocket
                     asyncio.create_task(receive_peer_messages(websocket, peer_ip))
                 continue
-                
+
             if message.startswith("/disconnect "):
                 peer_ip = message[12:].strip()
                 if peer_ip in connections:
@@ -122,25 +122,27 @@ async def user_input():
                 continue
 
             if message.startswith("/send "):
-    parts = message[6:].split(" ", 1)
-    if len(parts) < 2:
-        print("Usage: /send <peer_ip> <file_path>")
-        continue
-        
-    peer_ip, file_path = parts
-    file_path = file_path.strip()
-    
-    if peer_ip not in connections:
-        print(f"Not connected to {peer_ip}")
-        continue
-        
-    if not os.path.exists(file_path):
-        print(f"File not found: {file_path}")
-        continue
-        
-    # Send to single peer
-    await send_file(file_path, {peer_ip: connections[peer_ip]})
+                parts = message[6:].split(" ", 1)
+                if len(parts) < 2:
+                    print("Usage: /send <peer_ip> <file_path>")
+                    continue
 
+                peer_ip, file_path = parts
+                file_path = file_path.strip()
+
+                if peer_ip not in connections:
+                    print(f"Not connected to {peer_ip}")
+                    continue
+
+                if not os.path.exists(file_path):
+                    print(f"File not found: {file_path}")
+                    continue
+
+                # Send file to a single peer
+                await send_file(file_path, {peer_ip: connections[peer_ip]})
+                continue
+
+            # Send chat message to all peers
             if connections:
                 for peer_ip, websocket in list(connections.items()):
                     try:
@@ -178,7 +180,6 @@ async def receive_peer_messages(websocket, peer_ip):
         if peer_ip in connections:
             del connections[peer_ip]
         logging.info(f"Disconnected from {peer_ip}")
-
 
 async def get_own_ip():
     """Get the IP address of the current machine."""
