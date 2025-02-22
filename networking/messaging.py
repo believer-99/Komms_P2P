@@ -59,19 +59,22 @@ async def handle_incoming_connection(websocket, peer_ip):
         logging.exception(f"Error in connection handshake: {e}")
         return False
 
-async def connect_to_peers(peer_list):
-    """Continuously attempts to connect to discovered peers."""
+async def maintain_peer_list():
+    """Periodically clean up disconnected peers"""
     while True:
         try:
-            for peer_ip in peer_list[:]:
-                if peer_ip not in connections:
-                    websocket = await connect_to_peer(peer_ip)
-                    if websocket:
-                        connections[peer_ip] = websocket
-                        asyncio.create_task(receive_peer_messages(websocket, peer_ip))
+            # Remove dead connections
+            for peer_ip in list(connections.keys()):
+                if connections[peer_ip].closed:
+                    del connections[peer_ip]
+            
+            # Update peer list from discovery
+            global peer_list
+            peer_list = discovery.peer_list.copy()
+            
             await asyncio.sleep(5)
         except Exception as e:
-            logging.exception(f"Error in connect_to_peers: {e}")
+            logging.exception(f"Error in maintain_peer_list: {e}")
             await asyncio.sleep(5)
 
 async def user_input():
@@ -80,17 +83,63 @@ async def user_input():
         try:
             message = await ainput("> ")
 
-            if message.startswith("/send "):
-                file_path = message[6:].strip()
-                if not file_path:
-                    print("Usage: /send <file_path>")
-                    continue
-
-                if connections:
-                    await send_file(file_path, connections)
-                else:
-                    print("No peers connected to send file to.")
+            # Add new connection management commands
+            if message == "/list":
+                print("\nAvailable peers:")
+                for peer in peer_list:
+                    status = "Connected" if peer in connections else "Available"
+                    print(f"- {peer} ({status})")
                 continue
+                
+            if message.startswith("/connect "):
+                peer_ip = message[9:].strip()
+                if peer_ip == await get_own_ip():
+                    print("Cannot connect to self")
+                    continue
+                    
+                if peer_ip in connections:
+                    print(f"Already connected to {peer_ip}")
+                    continue
+                    
+                print(f"Attempting connection to {peer_ip}...")
+                websocket = await connect_to_peer(peer_ip)
+                if websocket:
+                    connections[peer_ip] = websocket
+                    asyncio.create_task(receive_peer_messages(websocket, peer_ip))
+                continue
+                
+            if message.startswith("/disconnect "):
+                peer_ip = message[12:].strip()
+                if peer_ip in connections:
+                    try:
+                        await connections[peer_ip].close()
+                    except:
+                        pass
+                    del connections[peer_ip]
+                    print(f"Disconnected from {peer_ip}")
+                else:
+                    print(f"Not connected to {peer_ip}")
+                continue
+
+            if message.startswith("/send "):
+    parts = message[6:].split(" ", 1)
+    if len(parts) < 2:
+        print("Usage: /send <peer_ip> <file_path>")
+        continue
+        
+    peer_ip, file_path = parts
+    file_path = file_path.strip()
+    
+    if peer_ip not in connections:
+        print(f"Not connected to {peer_ip}")
+        continue
+        
+    if not os.path.exists(file_path):
+        print(f"File not found: {file_path}")
+        continue
+        
+    # Send to single peer
+    await send_file(file_path, {peer_ip: connections[peer_ip]})
 
             if connections:
                 for peer_ip, websocket in list(connections.items()):

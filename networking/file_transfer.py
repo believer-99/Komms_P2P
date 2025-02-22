@@ -31,7 +31,7 @@ async def send_file(file_path: str, connections: dict):
                 desc=f"Sending to {peer_ip}",
                 ascii=True,
                 ncols=80,
-                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]',
+                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [Elapsed Time : {elapsed} || Remaining Time :{remaining}, {rate_fmt}]',
                 colour='GREEN'
             )
 

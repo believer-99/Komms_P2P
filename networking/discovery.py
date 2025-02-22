@@ -2,6 +2,7 @@ import socket
 import struct
 import logging
 import asyncio
+import time
 
 DISCOVERY_PORT = 50001
 MULTICAST_GROUP = "224.0.0.1"
@@ -12,6 +13,7 @@ class PeerDiscovery:
     def __init__(self):
         self.peer_list = []
         self._lock = asyncio.Lock()
+        self.last_seen = {}  # Track last seen timestamps
 
     async def receive_broadcasts(self):
         """Receives multicast messages and updates the peer list."""
@@ -29,9 +31,11 @@ class PeerDiscovery:
                     data, addr = await loop.sock_recvfrom(sock, 1024)
                     if data.decode() == DISCOVERY_MESSAGE and addr[0] != await self._get_own_ip():
                         async with self._lock:
-                            if addr[0] not in self.peer_list:
-                                logging.info(f"Found peer at {addr[0]}")
-                                self.peer_list.append(addr[0])
+                            ip = addr[0]
+                            self.last_seen[ip] = time.time()
+                            if ip not in self.peer_list:
+                                logging.info(f"Found peer at {ip}")
+                                self.peer_list.append(ip)
                 except BlockingIOError:
                     await asyncio.sleep(0.1)
                 except Exception as e:
@@ -39,6 +43,18 @@ class PeerDiscovery:
                     await asyncio.sleep(1)
         finally:
             sock.close()
+
+    async def cleanup_stale_peers(self):
+        """Remove peers not seen in 30 seconds"""
+        async with self._lock:
+            now = time.time()
+            stale = [ip for ip, ts in self.last_seen.items() if now - ts > 30]
+            for ip in stale:
+                if ip in self.peer_list:
+                    logging.info(f"Removing stale peer: {ip}")
+                    self.peer_list.remove(ip)
+                if ip in self.last_seen:
+                    del self.last_seen[ip]
 
     async def send_broadcasts(self):
         """Sends a multicast discovery message."""
@@ -74,4 +90,3 @@ class PeerDiscovery:
 
 # Usage example
 discovery = PeerDiscovery()
-# To access use await discovery.peer_list

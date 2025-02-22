@@ -37,6 +37,8 @@ async def main():
     # Start broadcast tasks
     broadcast_task = asyncio.create_task(discovery.send_broadcasts())
     discovery_task = asyncio.create_task(discovery.receive_broadcasts())
+    cleanup_task = asyncio.create_task(discovery.cleanup_stale_peers())
+
 
     # Start WebSocket server
     server = await websockets.serve(
@@ -50,11 +52,11 @@ async def main():
 
     try:
         await asyncio.gather(
-            connect_to_peers(discovery.peer_list),
             user_input(),
             display_messages(),
             broadcast_task,
-            discovery_task
+            discovery_task,
+            cleanup_task
         )
     finally:
         server.close()
