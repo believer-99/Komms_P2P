@@ -5,6 +5,7 @@ import socket
 import os
 from aioconsole import ainput
 from networking.file_transfer import send_file, receive_file
+from networking.discovery import discovery
 
 # Shared state
 message_queue = asyncio.Queue()
@@ -83,6 +84,17 @@ async def user_input():
     while True:
         try:
             message = await ainput("> ")
+
+            if message == "/help":
+                print("""
+                Available commands:
+                /connect <ip>    - Connect to specific peer
+                /disconnect <ip>  - Disconnect from peer
+                /send <ip> <file> - Send file to peer
+                /list             - Show available peers
+                /help             - Show this help
+                """)
+                continue
 
             if message == "/list":
                 print("\nAvailable peers:")
