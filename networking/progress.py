@@ -3,13 +3,11 @@ import sys
 from datetime import datetime, timedelta
 
 class ProgressBar:
-    def __init__(self, total: int, prefix: str = '', length: int = 50):
+    def __init__(self, total: int, prefix: str = ''):
         self.total = total
         self.prefix = prefix
-        self.length = length
         self.current = 0
         self.start_time = datetime.now()
-        self.term_width = shutil.get_terminal_size().columns
         
     def update(self, current: int) -> None:
         self.current = current
@@ -26,27 +24,24 @@ class ProgressBar:
         return str(timedelta(seconds=seconds))
             
     def _draw(self) -> None:
+        if self.total == 0:
+            return
+            
         percentage = (self.current / self.total) * 100
-        filled_length = int(self.length * self.current // self.total)
-        bar = '█' * filled_length + '░' * (self.length - filled_length)
+        term_width = shutil.get_terminal_size().columns
+        max_bar_length = max(term_width - 60, 20)  # Adjust for text elements
+        filled_length = int(max_bar_length * self.current // self.total)
+        bar = '█' * filled_length + '░' * (max_bar_length - filled_length)
         
         elapsed_time = (datetime.now() - self.start_time).total_seconds()
-        if elapsed_time > 0:
-            speed = self.current / elapsed_time
-            speed_str = self._format_speed(speed)
-            
-            if speed > 0:
-                remaining_bytes = self.total - self.current
-                eta_seconds = int(remaining_bytes / speed)
-                eta = self._format_time(eta_seconds)
-            else:
-                eta = "Unknown"
-        else:
-            speed_str = "0 B/s"
-            eta = "Calculating..."
-            
-        progress_text = f'\r{self.prefix} |{bar}| {percentage:6.2f}% | {speed_str} | ETA: {eta}'
+        speed = self.current / elapsed_time if elapsed_time > 0 else 0
+        speed_str = self._format_speed(speed)
+        eta = (self.total - self.current) / speed if speed > 0 else 0
+        eta_str = self._format_time(int(eta)) if speed > 0 else "Unknown"
         
+        progress_text = f'\r{self.prefix} |{bar}| {percentage:6.2f}% | {speed_str} | ETA: {eta_str}'
+        
+        # Color coding
         if percentage < 33:
             color = '\033[91m'  # Red
         elif percentage < 66:
