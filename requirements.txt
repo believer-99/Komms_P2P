@@ -4,3 +4,4 @@ PyQt6_sip==13.9.1
 websockets==14.2
 aioconsole==0.6.0
 aiofiles==23.2.1
+tqdm==4.67.1
