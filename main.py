@@ -10,9 +10,9 @@ from networking.messaging import (
     connect_to_peers,
     receive_peer_messages,
     handle_incoming_connection,
-    connections,
-    send_queues,  # Import send_queues
+    connections
 )
+from networking.file_transfer import send_file, receive_file
 
 # Configure logging
 logging.basicConfig(
@@ -26,16 +26,8 @@ async def handle_peer_connection(websocket, path=None):
     peer_ip = websocket.remote_address[0]
     logging.info(f"New connection from {peer_ip}")
 
-    # Create send queue for the peer if not exists
-    if peer_ip not in send_queues:
-        send_queues[peer_ip] = asyncio.Queue()
-
     if await handle_incoming_connection(websocket, peer_ip):
-        # The receive_peer_messages is now started in handle_incoming_connection
-        pass
-    else:
-        # If connection handling failed, ensure websocket is closed
-        await websocket.close()
+        await receive_peer_messages(websocket, peer_ip)
 
 async def main():
     """Main function to run the P2P chat application."""

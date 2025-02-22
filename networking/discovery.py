@@ -10,7 +10,7 @@ DISCOVERY_MESSAGE = "P2P_DISCOVERY"
 
 class PeerDiscovery:
     def __init__(self):
-        self.peer_list = set()  # Changed to set to prevent duplicates
+        self.peer_list = []
         self._lock = asyncio.Lock()
 
     async def receive_broadcasts(self):
@@ -29,12 +29,12 @@ class PeerDiscovery:
                     data, addr = await loop.sock_recvfrom(sock, 1024)
                     if data.decode() == DISCOVERY_MESSAGE and addr[0] != await self._get_own_ip():
                         async with self._lock:
-                            if addr[0] not in self.peer_list:  # Check unnecessary with sets, but leave for clarity
+                            if addr[0] not in self.peer_list:
                                 logging.info(f"Found peer at {addr[0]}")
-                                self.peer_list.add(addr[0])
+                                self.peer_list.append(addr[0])
                 except BlockingIOError:
                     await asyncio.sleep(0.1)
-                except Exception as e:  # Catch broader exceptions
+                except Exception as e:
                     logging.exception(f"Error in receive_broadcasts: {e}")
                     await asyncio.sleep(1)
         finally:
@@ -71,7 +71,6 @@ class PeerDiscovery:
         except Exception:
             logging.error("Could not get own IP address, using loopback")
             return "127.0.0.1"
-
 
 # Usage example
 discovery = PeerDiscovery()
