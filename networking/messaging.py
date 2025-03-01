@@ -8,6 +8,9 @@ from networking.file_transfer import send_file, receive_file
 from networking.discovery import discovery
 
 # Shared state
+ongoing_transfers = {}
+paused_transfers = {}
+transfer_lock = asyncio.Lock()
 message_queue = asyncio.Queue()
 connections = {}
 peer_list = []
@@ -88,21 +91,23 @@ async def user_input():
             if message == "/help":
                 print("""
                 Available commands:
-                /connect <ip>    - Connect to specific peer
-                /disconnect <ip>  - Disconnect from peer
-                /send <ip> <file> - Send file to peer
+                /connect <ip>      - Connect to specific peer
+                /disconnect <ip>   - Disconnect from peer
+                /send <ip> <file>  - Send file to peer
+                /pause <ip> <file> - Pause ongoing transfer
+                /resume <ip> <file> - Resume paused transfer
                 /list             - Show available peers
                 /help             - Show this help
                 """)
                 continue
-
+            
             if message == "/list":
                 print("\nAvailable peers:")
                 for peer in peer_list:
                     status = "Connected" if peer in connections else "Available"
                     print(f"- {peer} ({status})")
                 continue
-
+            
             if message.startswith("/connect "):
                 peer_ip = message[9:].strip()
                 if peer_ip == await get_own_ip():
@@ -141,57 +146,40 @@ async def user_input():
 
                 peer_ip, file_path = parts
                 file_path = file_path.strip()
+                file_name = os.path.basename(file_path)
+                key = (peer_ip, file_name)
 
-                if peer_ip not in connections:
-                    print(f"Not connected to {peer_ip}")
-                    continue
+                async with transfer_lock:
+                    if key in ongoing_transfers or key in paused_transfers:
+                        print("Transfer already in progress or paused")
+                        continue
 
-                if not os.path.exists(file_path):
-                    print(f"File not found: {file_path}")
-                    continue
+                    if peer_ip not in connections:
+                        print(f"Not connected to {peer_ip}")
+                        continue
 
-                # Send file to a single peer
-                await send_file(file_path, {peer_ip: connections[peer_ip]})
+                    if not os.path.exists(file_path):
+                        print(f"File not found: {file_path}")
+                        continue
+
+                    file_size = os.path.getsize(file_path)
+                    progress = {'bytes_sent': 0}
+                    task = asyncio.create_task(
+                        send_file(file_path, {peer_ip: connections[peer_ip]}, progress=progress)
+                    )
+                    
+                    ongoing_transfers[key] = {
+                        'task': task,
+                        'file_path': file_path,
+                        'peer_ip': peer_ip,
+                        'file_size': file_size,
+                        'progress': progress
+                    }
                 continue
-
-            # Send chat message to all peers
-            if connections:
-                for peer_ip, websocket in list(connections.items()):
-                    try:
-                        await websocket.send(f"MESSAGE {message}")
-                    except Exception as e:
-                        logging.exception(f"Error sending to {peer_ip}: {e}")
-                        if peer_ip in connections:
-                            del connections[peer_ip]
-            else:
-                print("No peers connected to send message to.")
-
+        
         except Exception as e:
             logging.exception(f"Error in user_input: {e}")
             await asyncio.sleep(1)
-
-async def receive_peer_messages(websocket, peer_ip):
-    """Receives and processes messages from a connected peer."""
-    try:
-        while True:
-            message = await websocket.recv()
-
-            if message.startswith("FILE "):
-                try:
-                    _, file_name, file_size, start_byte = message.split(" ", 3)
-                    await receive_file(websocket, file_name, int(file_size), int(start_byte))
-                except Exception as e:
-                    logging.exception(f"Error receiving file: {e}")
-            elif message.startswith("MESSAGE "):
-                await message_queue.put(f"{peer_ip}: {message[8:]}")
-    except websockets.exceptions.ConnectionClosed:
-        logging.info(f"Connection closed with {peer_ip}")
-    except Exception as e:
-        logging.exception(f"Error receiving from {peer_ip}: {e}")
-    finally:
-        if peer_ip in connections:
-            del connections[peer_ip]
-        logging.info(f"Disconnected from {peer_ip}")
 
 async def get_own_ip():
     """Get the IP address of the current machine."""
@@ -203,6 +191,19 @@ async def get_own_ip():
         return ip
     except Exception:
         return "127.0.0.1"
+
+async def receive_peer_messages(websocket, peer_ip):
+    """Receives and processes messages from a connected peer."""
+    try:
+        while True:
+            message = await websocket.recv()
+            if message.startswith("MESSAGE "):
+                await message_queue.put(f"{peer_ip}: {message[8:]}")
+    except websockets.exceptions.ConnectionClosed:
+        logging.info(f"Connection closed with {peer_ip}")
+    finally:
+        if peer_ip in connections:
+            del connections[peer_ip]
 
 async def display_messages():
     """Displays messages from the message queue."""
