@@ -11,6 +11,7 @@ from networking.discovery import discovery
 message_queue = asyncio.Queue()
 connections = {}
 peer_list = []
+active_transfers = {}
 
 async def connect_to_peer(peer_ip, port=8765):
     """Establishes a WebSocket connection to a peer."""
@@ -99,6 +100,8 @@ async def user_input():
                 /connect <ip>    - Connect to specific peer
                 /disconnect <ip>  - Disconnect from peer
                 /send <ip> <file> - Send file to peer
+                /pause <ip> <tranfer_id> - Pause the File Transfer
+                /resume <ip> <tranfer_id> - Resume the File Transfer
                 /list             - Show available peers
                 /help             - Show this help
                 """)
@@ -162,6 +165,50 @@ async def user_input():
                 await send_file(file_path, {peer_ip: connections[peer_ip]})
                 continue
             
+            if message.startswith("/pause "):
+                parts = message[7:].split()
+                if len(parts) < 2:
+                    print("Usage: /pause <peer_ip> <transfer_id>")
+                    continue
+                
+                peer_ip, transfer_id = parts
+                if peer_ip not in connections:
+                    print(f"Not connected to {peer_ip}")
+                    continue
+                
+                # Send pause request
+                try:
+                    await connections[peer_ip].send(json.dumps({
+                        'type': 'transfer_pause',
+                        'transfer_id': transfer_id
+                    }))
+                    print(f"Pause request sent for transfer {transfer_id}")
+                except Exception as e:
+                    print(f"Error sending pause request: {e}")
+                continue
+
+            if message.startswith("/resume "):
+                parts = message[8:].split()
+                if len(parts) < 2:
+                    print("Usage: /resume <peer_ip> <transfer_id>")
+                    continue
+                
+                peer_ip, transfer_id = parts
+                if peer_ip not in connections:
+                    print(f"Not connected to {peer_ip}")
+                    continue
+                
+                # Send resume request
+                try:
+                    await connections[peer_ip].send(json.dumps({
+                        'type': 'transfer_resume',
+                        'transfer_id': transfer_id
+                    }))
+                    print(f"Resume request sent for transfer {transfer_id}")
+                except Exception as e:
+                    print(f"Error sending resume request: {e}")
+                continue
+            
             if not message.startswith("/"):
                 if connections:
                     await send_message_to_peers(message)
@@ -190,34 +237,69 @@ async def receive_peer_messages(websocket, peer_ip):
         while True:
             message = await websocket.recv()
             
-            # Message handling
-            if message.startswith("MESSAGE "):
-                await message_queue.put(f"{peer_ip}: {message[8:]}")
-            
-            # File transfer handling
-            elif message.startswith("FILE "):
-                try:
-                    # Parse file details
-                    _, file_name, file_size, start_byte, file_hash = message.split(" ")
-                    file_size = int(file_size)
-                    start_byte = int(start_byte)
-                    
-                    # Attempt file receive
-                    success = await receive_file(
-                        websocket, 
-                        file_name, 
-                        file_size, 
-                        start_byte, 
-                        expected_hash=file_hash
-                    )
-                    
-                    if success:
-                        await message_queue.put(f"📥 File '{file_name}' received from {peer_ip}")
-                    else:
-                        await message_queue.put(f"❌ File transfer failed: {file_name}")
+            # Handle different message types
+            try:
+                data = json.loads(message)
+            except json.JSONDecodeError:
+                # Fallback to original message handling
+                if message.startswith("MESSAGE "):
+                    await message_queue.put(f"{peer_ip}: {message[8:]}")
+                continue
+
+            # File transfer initialization
+            if data.get('type') == 'file_transfer_init':
+                # Prepare for file transfer
+                transfer_metadata = {
+                    'filename': data['filename'],
+                    'filesize': data['filesize'],
+                    'transfer_id': data['transfer_id'],
+                    'file_hash': data.get('file_hash')
+                }
                 
-                except Exception as e:
-                    logging.exception(f"File transfer error from {peer_ip}: {e}")
+                # Store transfer metadata
+                active_transfers[data['transfer_id']] = {
+                    'metadata': transfer_metadata,
+                    'status': 'pending'
+                }
+                
+                await message_queue.put(f"📥 Preparing to receive '{data['filename']}' from {peer_ip}")
+
+            # File chunk transfer
+            elif data.get('type') == 'file_chunk':
+                transfer_id = data.get('transfer_id')
+                if transfer_id not in active_transfers:
+                    logging.warning(f"Unknown transfer ID: {transfer_id}")
+                    continue
+
+                # Receive file chunks
+                transfer_metadata = active_transfers[transfer_id]['metadata']
+                await receive_file(websocket, transfer_metadata)
+
+            # Transfer pause request
+            elif data.get('type') == 'transfer_pause':
+                transfer_id = data.get('transfer_id')
+                if transfer_id in active_transfers:
+                    active_transfers[transfer_id]['status'] = 'paused'
+                    await message_queue.put(f"⏸️ Transfer {transfer_id} paused")
+                else:
+                    logging.warning(f"Pause request for unknown transfer: {transfer_id}")
+
+            # Transfer resume request
+            elif data.get('type') == 'transfer_resume':
+                transfer_id = data.get('transfer_id')
+                if transfer_id in active_transfers:
+                    # Check if transfer was previously paused
+                    if active_transfers[transfer_id]['status'] == 'paused':
+                        active_transfers[transfer_id]['status'] = 'in_progress'
+                        await message_queue.put(f"▶️ Transfer {transfer_id} resumed")
+                    else:
+                        logging.warning(f"Resume request for non-paused transfer: {transfer_id}")
+                else:
+                    logging.warning(f"Resume request for unknown transfer: {transfer_id}")
+
+            # Message handling remains the same
+            elif data.get('type') == 'MESSAGE':
+                await message_queue.put(f"{peer_ip}: {data['message']}")
     
     except websockets.exceptions.ConnectionClosed:
         logging.info(f"Connection closed with {peer_ip}")
