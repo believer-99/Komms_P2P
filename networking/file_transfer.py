@@ -6,6 +6,17 @@ from tqdm.asyncio import tqdm
 import hashlib
 import platform
 import socket
+import uuid
+import json
+import time
+import math
+
+class TransferState:
+    PENDING = 'pending'
+    IN_PROGRESS = 'in_progress'
+    PAUSED = 'paused'
+    COMPLETED = 'completed'
+    FAILED = 'failed'
 
 class FileTransferManager:
     @staticmethod
@@ -52,24 +63,58 @@ class FileTransferManager:
         os.makedirs(p2p_download_dir, exist_ok=True)
         return p2p_download_dir
 
+class FileTransfer:
+    def __init__(self, file_path, peer_ip):
+        """
+        Initialize a file transfer
+        
+        Args:
+            file_path (str): Path to the file to transfer
+            peer_ip (str): IP address of the peer
+        """
+        self.file_path = file_path
+        self.peer_ip = peer_ip
+        self.total_size = os.path.getsize(file_path)
+        self.transferred_size = 0
+        self.state = TransferState.PENDING
+        self.transfer_id = str(uuid.uuid4())
+        self.chunk_size = 64 * 1024  # 64 KB
+        self.paused_event = asyncio.Event()
+        self.resume_event = asyncio.Event()
+
+    async def pause(self):
+        """Pause the ongoing file transfer"""
+        if self.state == TransferState.IN_PROGRESS:
+            self.state = TransferState.PAUSED
+            self.paused_event.set()
+            logging.info(f"Transfer {self.transfer_id} paused")
+
+    async def resume(self):
+        """Resume a paused file transfer"""
+        if self.state == TransferState.PAUSED:
+            self.state = TransferState.IN_PROGRESS
+            self.paused_event.clear()
+            self.resume_event.set()
+            logging.info(f"Transfer {self.transfer_id} resumed")
+
 async def send_file(file_path: str, connections: dict):
     """
-    Send a file to connected peers with enhanced progress tracking
+    Send a file to connected peers with enhanced transfer management
     
     Args:
         file_path (str): Path to the file to send
         connections (dict): Dictionary of peer connections
     
     Returns:
-        bool: True if file transfer successful, False otherwise
+        dict: Transfer results for each peer
     """
     if not connections:
         logging.warning("No peers connected to send the file.")
-        return False
-    
+        return {}
+
     if not os.path.exists(file_path):
         logging.error(f"File not found: {file_path}")
-        return False
+        return {}
 
     file_size = os.path.getsize(file_path)
     file_name = os.path.basename(file_path)
@@ -77,16 +122,26 @@ async def send_file(file_path: str, connections: dict):
 
     if not file_hash:
         logging.error("Failed to calculate file hash")
-        return False
+        return {}
 
-    overall_success = True
+    transfer_results = {}
 
     for peer_ip, websocket in list(connections.items()):
         try:
+            # Create transfer object
+            transfer = FileTransfer(file_path, peer_ip)
+            transfer.state = TransferState.IN_PROGRESS
+
             print(f"\nSending '{file_name}' ({file_size} bytes) to {peer_ip}")
             
-            # Send file metadata
-            await websocket.send(f"FILE {file_name} {file_size} 0 {file_hash}")
+            # Send file metadata with transfer ID
+            await websocket.send(json.dumps({
+                'type': 'file_transfer_init',
+                'transfer_id': transfer.transfer_id,
+                'filename': file_name,
+                'filesize': file_size,
+                'file_hash': file_hash
+            }))
             await asyncio.sleep(0.5)
 
             progress_bar = tqdm(
@@ -105,12 +160,26 @@ async def send_file(file_path: str, connections: dict):
             async with aiofiles.open(file_path, 'rb') as file:
                 bytes_sent = 0
                 while bytes_sent < file_size:
-                    chunk = await file.read(64 * 1024)  
+                    # Check for pause
+                    if transfer.paused_event.is_set():
+                        await transfer.resume_event.wait()
+                        transfer.resume_event.clear()
+
+                    chunk = await file.read(transfer.chunk_size)
                     if not chunk:
                         break
-                    await websocket.send(chunk)
+
+                    # Send chunk with transfer metadata
+                    await websocket.send(json.dumps({
+                        'type': 'file_chunk',
+                        'transfer_id': transfer.transfer_id,
+                        'chunk': chunk.hex(),  # Convert to hex for JSON serialization
+                        'offset': bytes_sent
+                    }))
+
                     bytes_sent += len(chunk)
                     progress_bar.update(len(chunk))
+                    transfer.transferred_size = bytes_sent
 
                     # Adaptive flow control
                     if bytes_sent % (64 * 1024 * 16) == 0:
@@ -118,39 +187,55 @@ async def send_file(file_path: str, connections: dict):
 
             progress_bar.close()
             print(f"✅ Successfully sent '{file_name}' to {peer_ip}")
+            
+            transfer.state = TransferState.COMPLETED
+            transfer_results[peer_ip] = {
+                'status': 'success',
+                'transfer_id': transfer.transfer_id
+            }
 
         except asyncio.CancelledError:
             logging.info(f"File transfer to {peer_ip} cancelled")
-            overall_success = False
+            transfer_results[peer_ip] = {
+                'status': 'cancelled',
+                'transfer_id': transfer.transfer_id
+            }
+            transfer.state = TransferState.FAILED
             break
         except Exception as e:
             logging.exception(f"Error sending to {peer_ip}: {e}")
-            overall_success = False
+            transfer_results[peer_ip] = {
+                'status': 'failed',
+                'transfer_id': transfer.transfer_id,
+                'error': str(e)
+            }
+            transfer.state = TransferState.FAILED
             try:
                 await websocket.close()
             except:
                 pass
-            finally:
-                progress_bar.close()
 
-    return overall_success
+    return transfer_results
 
-async def receive_file(websocket, file_name, file_size, start_byte=0, expected_hash=None):
+async def receive_file(websocket, metadata, start_byte=0):
     """
-    Receive a file with advanced progress tracking and integrity verification
+    Receive a file with advanced transfer management
     
     Args:
         websocket: WebSocket connection
-        file_name (str): Name of the file to receive
-        file_size (int): Total file size
+        metadata (dict): File transfer metadata
         start_byte (int): Resuming transfer from this byte
-        expected_hash (str, optional): Expected file hash for verification
     
     Returns:
-        bool: True if file transfer successful, False otherwise
+        bool: Transfer success status
     """
     try:
         peer_ip = websocket.remote_address[0]
+        file_name = metadata['filename']
+        file_size = metadata['filesize']
+        transfer_id = metadata['transfer_id']
+        expected_hash = metadata.get('file_hash')
+
         print(f"\nReceiving '{file_name}' ({file_size} bytes) from {peer_ip}")
         
         progress_bar = tqdm(
@@ -183,21 +268,29 @@ async def receive_file(websocket, file_name, file_size, start_byte=0, expected_h
 
             received_bytes = start_byte
             while received_bytes < file_size:
-                try:
-                    chunk = await websocket.recv()
-                    await f.write(chunk)
-                    
-                    # Update progress
-                    received_bytes += len(chunk)
-                    progress_bar.update(len(chunk))
-                    
-                    # Hash calculation for integrity check
-                    if hash_algo:
-                        hash_algo.update(chunk)
+                chunk_data = await websocket.recv()
+                chunk_metadata = json.loads(chunk_data)
 
-                except asyncio.TimeoutError:
-                    logging.warning(f"Timeout during file transfer from {peer_ip}")
-                    return False
+                if chunk_metadata['type'] != 'file_chunk':
+                    continue
+
+                # Verify transfer ID
+                if chunk_metadata['transfer_id'] != transfer_id:
+                    logging.warning(f"Mismatched transfer ID for {file_name}")
+                    continue
+
+                # Convert hex chunk back to bytes
+                chunk = bytes.fromhex(chunk_metadata['chunk'])
+                
+                await f.write(chunk)
+                
+                # Update progress
+                received_bytes += len(chunk)
+                progress_bar.update(len(chunk))
+                
+                # Hash calculation for integrity check
+                if hash_algo:
+                    hash_algo.update(chunk)
 
             progress_bar.close()
 
