@@ -3,6 +3,8 @@ import struct
 import logging
 import asyncio
 import time
+import netifaces
+
 
 DISCOVERY_PORT = 50001
 MULTICAST_GROUP = "224.0.0.1"
@@ -79,13 +81,29 @@ class PeerDiscovery:
             sock.close()
 
     async def _get_own_ip(self):
-        """Get the IP address of the current machine."""
+        """Get the most appropriate IP address"""
         try:
+            # Prefer non-loopback, non-local IPs
+            for interface in netifaces.interfaces():
+                try:
+                    addrs = netifaces.ifaddresses(interface)
+                    if netifaces.AF_INET in addrs:
+                        ip = addrs[netifaces.AF_INET][0]['addr']
+                        # Skip loopback and local addresses
+                        if not (ip.startswith('127.') or ip.startswith('169.254.')):
+                            return ip
+                except ValueError:
+                    continue
+
+            # Fallback method
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))  # Use Google's public DNS server
-            return s.getsockname()[0]
-        except Exception:
-            logging.error("Could not get own IP address, using loopback")
+            try:
+                s.connect(("8.8.8.8", 80))
+                return s.getsockname()[0]
+            except Exception:
+                return "127.0.0.1"
+        except Exception as e:
+            logging.error(f"IP detection failed: {e}")
             return "127.0.0.1"
 
 # Usage example
