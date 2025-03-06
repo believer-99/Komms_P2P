@@ -3,6 +3,8 @@ import logging
 import websockets
 import socket
 import os
+import json  
+import netifaces  
 from aioconsole import ainput
 from networking.file_transfer import send_file, receive_file
 from networking.discovery import discovery
@@ -167,65 +169,55 @@ async def user_input():
             
             if message.startswith("/pause "):
                 parts = message[7:].split()
-                if len(parts) < 2:
-                    print("Usage: /pause <peer_ip> <transfer_id>")
-                    continue
-                
-                peer_ip, transfer_id = parts
-                if peer_ip not in connections:
-                    print(f"Not connected to {peer_ip}")
-                    continue
-                
-                # Send pause request
-                try:
-                    await connections[peer_ip].send(json.dumps({
-                        'type': 'transfer_pause',
-                        'transfer_id': transfer_id
-                    }))
-                    print(f"Pause request sent for transfer {transfer_id}")
-                except Exception as e:
-                    print(f"Error sending pause request: {e}")
+            if len(parts) < 1:
+                print("Usage: /pause <transfer_id>")
                 continue
+            
+            transfer_id = parts[0]
+            if transfer_id in active_transfers:
+                await active_transfers[transfer_id].pause()
+                print(f"Transfer {transfer_id} paused")
+            else:
+                print("Invalid transfer ID")
 
             if message.startswith("/resume "):
                 parts = message[8:].split()
-                if len(parts) < 2:
-                    print("Usage: /resume <peer_ip> <transfer_id>")
+                if len(parts) < 1:
+                    print("Usage: /resume <transfer_id>")
                     continue
                 
-                peer_ip, transfer_id = parts
-                if peer_ip not in connections:
-                    print(f"Not connected to {peer_ip}")
-                    continue
-                
-                # Send resume request
-                try:
-                    await connections[peer_ip].send(json.dumps({
-                        'type': 'transfer_resume',
-                        'transfer_id': transfer_id
-                    }))
-                    print(f"Resume request sent for transfer {transfer_id}")
-                except Exception as e:
-                    print(f"Error sending resume request: {e}")
-                continue
-            
-            if not message.startswith("/"):
-                if connections:
-                    await send_message_to_peers(message)
+                transfer_id = parts[0]
+                if transfer_id in active_transfers:
+                    await active_transfers[transfer_id].resume()
+                    print(f"Transfer {transfer_id} resumed")
                 else:
-                    print("No peers connected. Use /connect <ip> to connect.")
+                    print("Invalid transfer ID")
+                
+            if message == "/transfers":
+                print("\nActive Transfers:")
+                for transfer_id, transfer in active_transfers.items():
+                    status = transfer.state
+                    progress = f"{transfer.transferred_size}/{transfer.total_size}"
+                    print(f"- ID: {transfer_id} | {status} | Progress: {progress}")
 
-            # Send chat message to all peers
-            if connections:
-                for peer_ip, websocket in list(connections.items()):
-                    try:
-                        await websocket.send(f"MESSAGE {message}")
-                    except Exception as e:
-                        logging.exception(f"Error sending to {peer_ip}: {e}")
-                        if peer_ip in connections:
-                            del connections[peer_ip]
-            else:
-                print("No peers connected to send message to.")
+            if not message.startswith("/"):
+                    if connections:
+                        await send_message_to_peers(message)
+                    else:
+                        print("No peers connected. Use /connect <ip> to connect.")    
+                
+
+            # # Send chat message to all peers
+            # if connections:
+            #     for peer_ip, websocket in list(connections.items()):
+            #         try:
+            #             await websocket.send(f"MESSAGE {message}")
+            #         except Exception as e:
+            #             logging.exception(f"Error sending to {peer_ip}: {e}")
+            #             if peer_ip in connections:
+            #                 del connections[peer_ip]
+            # else:
+            #     print("No peers connected to send message to.")
 
         except Exception as e:
             logging.exception(f"Error in user_input: {e}")
@@ -307,7 +299,7 @@ async def receive_peer_messages(websocket, peer_ip):
         if peer_ip in connections:
             del connections[peer_ip]
 
-async def get_own_ip(self):
+async def get_own_ip():
         """Get the most appropriate IP address"""
         try:
             # Prefer non-loopback, non-local IPs

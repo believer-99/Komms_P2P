@@ -80,21 +80,22 @@ class FileTransfer:
         self.transfer_id = str(uuid.uuid4())
         self.chunk_size = 64 * 1024  # 64 KB
         self.paused_event = asyncio.Event()
-        self.resume_event = asyncio.Event()
+        self.paused = False 
+        self.resume_event = asyncio.Event()  
 
     async def pause(self):
-        """Pause the ongoing file transfer"""
+        """Pause the transfer"""
         if self.state == TransferState.IN_PROGRESS:
+            self.paused = True
             self.state = TransferState.PAUSED
-            self.paused_event.set()
             logging.info(f"Transfer {self.transfer_id} paused")
 
     async def resume(self):
-        """Resume a paused file transfer"""
+        """Resume the transfer"""
         if self.state == TransferState.PAUSED:
+            self.paused = False
+            self.resume_event.set()  # Signal to resume
             self.state = TransferState.IN_PROGRESS
-            self.paused_event.clear()
-            self.resume_event.set()
             logging.info(f"Transfer {self.transfer_id} resumed")
 
 async def send_file(file_path: str, connections: dict):
@@ -127,6 +128,9 @@ async def send_file(file_path: str, connections: dict):
     transfer_results = {}
 
     for peer_ip, websocket in list(connections.items()):
+        transfer = FileTransfer(file_path, peer_ip)
+        active_transfers[transfer.transfer_id] = transfer
+
         try:
             # Create transfer object
             transfer = FileTransfer(file_path, peer_ip)
@@ -160,8 +164,8 @@ async def send_file(file_path: str, connections: dict):
             async with aiofiles.open(file_path, 'rb') as file:
                 bytes_sent = 0
                 while bytes_sent < file_size:
-                    # Check for pause
-                    if transfer.paused_event.is_set():
+                    # Handle pause/resume
+                    if transfer.paused:
                         await transfer.resume_event.wait()
                         transfer.resume_event.clear()
 
@@ -195,6 +199,9 @@ async def send_file(file_path: str, connections: dict):
             }
 
         except asyncio.CancelledError:
+            if transfer.paused:
+                logging.info("Transfer cancelled while paused")
+
             logging.info(f"File transfer to {peer_ip} cancelled")
             transfer_results[peer_ip] = {
                 'status': 'cancelled',
@@ -268,9 +275,13 @@ async def receive_file(websocket, metadata, start_byte=0):
 
             received_bytes = start_byte
             while received_bytes < file_size:
-                chunk_data = await websocket.recv()
-                chunk_metadata = json.loads(chunk_data)
+                if active_transfers[transfer_id]['status'] == 'paused':
+                    # Wait for resume signal
+                    while active_transfers[transfer_id]['status'] == 'paused':
+                        await asyncio.sleep(1)
 
+                chunk_data = await websocket.recv()
+        
                 if chunk_metadata['type'] != 'file_chunk':
                     continue
 
