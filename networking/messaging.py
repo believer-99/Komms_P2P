@@ -169,9 +169,9 @@ async def user_input():
             
             if message.startswith("/pause "):
                 parts = message[7:].split()
-            if len(parts) < 1:
-                print("Usage: /pause <transfer_id>")
-                continue
+                if len(parts) < 1:
+                    print("Usage: /pause <transfer_id>")
+                    continue
             
             transfer_id = parts[0]
             if transfer_id in active_transfers:
@@ -240,6 +240,7 @@ async def receive_peer_messages(websocket, peer_ip):
 
             # File transfer initialization
             if data.get('type') == 'file_transfer_init':
+                asyncio.create_task(receive_file(websocket, transfer_metadata))
                 # Prepare for file transfer
                 transfer_metadata = {
                     'filename': data['filename'],

@@ -2,5 +2,3 @@ venv/
 .venv/
 **/__pycache__/
 **/__pycache__/
-networking/__init__.py
-networking/testing/__init__.py

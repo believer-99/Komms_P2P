@@ -10,6 +10,7 @@ import uuid
 import json
 import time
 import math
+from networking.messaging import active_transfers
 
 class TransferState:
     PENDING = 'pending'
@@ -281,7 +282,8 @@ async def receive_file(websocket, metadata, start_byte=0):
                         await asyncio.sleep(1)
 
                 chunk_data = await websocket.recv()
-        
+                chunk_metadata = json.loads(chunk_data)
+
                 if chunk_metadata['type'] != 'file_chunk':
                     continue
 
