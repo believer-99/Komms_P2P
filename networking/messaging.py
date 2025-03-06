@@ -6,10 +6,10 @@ import os
 import json  
 import netifaces  
 from aioconsole import ainput
-from networking.file_transfer import send_file, receive_file
 from networking.discovery import discovery
+from networking.shared_state import active_transfers
+from networking.file_transfer import send_file, receive_file
 
-# Shared state
 message_queue = asyncio.Queue()
 connections = {}
 peer_list = []
@@ -173,12 +173,13 @@ async def user_input():
                     print("Usage: /pause <transfer_id>")
                     continue
             
-            transfer_id = parts[0]
-            if transfer_id in active_transfers:
-                await active_transfers[transfer_id].pause()
-                print(f"Transfer {transfer_id} paused")
-            else:
-                print("Invalid transfer ID")
+                transfer_id = parts[0]
+                if transfer_id in active_transfers:
+                    await active_transfers[transfer_id].pause()
+                    print(f"Transfer {transfer_id} paused")
+                else:
+                    print("Invalid transfer ID")
+                continue
 
             if message.startswith("/resume "):
                 parts = message[8:].split()
@@ -192,6 +193,7 @@ async def user_input():
                     print(f"Transfer {transfer_id} resumed")
                 else:
                     print("Invalid transfer ID")
+                continue
                 
             if message == "/transfers":
                 print("\nActive Transfers:")
@@ -240,7 +242,6 @@ async def receive_peer_messages(websocket, peer_ip):
 
             # File transfer initialization
             if data.get('type') == 'file_transfer_init':
-                asyncio.create_task(receive_file(websocket, transfer_metadata))
                 # Prepare for file transfer
                 transfer_metadata = {
                     'filename': data['filename'],
@@ -256,6 +257,7 @@ async def receive_peer_messages(websocket, peer_ip):
                 }
                 
                 await message_queue.put(f"📥 Preparing to receive '{data['filename']}' from {peer_ip}")
+                asyncio.create_task(receive_file(websocket, transfer_metadata))
 
             # File chunk transfer
             elif data.get('type') == 'file_chunk':
@@ -263,7 +265,6 @@ async def receive_peer_messages(websocket, peer_ip):
                 if transfer_id not in active_transfers:
                     logging.warning(f"Unknown transfer ID: {transfer_id}")
                     continue
-
                 # Receive file chunks
                 transfer_metadata = active_transfers[transfer_id]['metadata']
                 await receive_file(websocket, transfer_metadata)
