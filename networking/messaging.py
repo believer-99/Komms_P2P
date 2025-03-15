@@ -4,6 +4,8 @@ import websockets
 import socket
 import os
 import json
+import hashlib
+import aiofiles
 import netifaces
 from aioconsole import ainput
 from networking.discovery import PeerDiscovery
