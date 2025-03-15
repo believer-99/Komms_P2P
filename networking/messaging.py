@@ -3,17 +3,18 @@ import logging
 import websockets
 import socket
 import os
-import json  
-import netifaces  
+import json
+import netifaces
 from aioconsole import ainput
-from networking.discovery import discovery
+from networking.discovery import PeerDiscovery
 from networking.shared_state import active_transfers
-from networking.file_transfer import send_file, receive_file
+from networking.file_transfer import send_file, receive_file, FileTransfer, TransferState
 
+# Global variables
 message_queue = asyncio.Queue()
 connections = {}
 peer_list = []
-active_transfers = {}
+
 
 async def connect_to_peer(peer_ip, port=8765):
     """Establishes a WebSocket connection to a peer."""
@@ -43,6 +44,7 @@ async def connect_to_peer(peer_ip, port=8765):
         logging.exception(f"Failed to connect to {peer_ip}: {e}")
         return None
 
+
 async def handle_incoming_connection(websocket, peer_ip):
     """Handle new incoming connection setup."""
     try:
@@ -64,7 +66,8 @@ async def handle_incoming_connection(websocket, peer_ip):
         logging.exception(f"Error in connection handshake: {e}")
         return False
 
-async def maintain_peer_list():
+
+async def maintain_peer_list(discovery_instance):
     """Periodically clean up disconnected peers."""
     while True:
         try:
@@ -75,20 +78,28 @@ async def maintain_peer_list():
 
             # Update peer list from discovery
             global peer_list
-            peer_list = discovery.peer_list.copy()
+            peer_list = discovery_instance.peer_list.copy()
 
             await asyncio.sleep(5)
         except Exception as e:
             logging.exception(f"Error in maintain_peer_list: {e}")
             await asyncio.sleep(5)
 
+
 async def send_message_to_peers(message):
     """Send a message to all connected peers."""
-    for peer_ip, websocket in connections.items():
+    for peer_ip, websocket in list(connections.items()):
         try:
-            await websocket.send(f"MESSAGE {message}")
+            await websocket.send(
+                json.dumps({"type": "MESSAGE", "message": message})
+            )
         except Exception as e:
             logging.error(f"Failed to send message to {peer_ip}: {e}")
+            # Remove closed connections
+            if not websocket.open:
+                if peer_ip in connections:
+                    del connections[peer_ip]
+
 
 async def user_input():
     """Handles user input and sends messages to all connected peers."""
@@ -97,16 +108,19 @@ async def user_input():
             message = await ainput("> ")
 
             if message == "/help":
-                print("""
+                print(
+                    """
                 Available commands:
                 /connect <ip>    - Connect to specific peer
                 /disconnect <ip>  - Disconnect from peer
                 /send <ip> <file> - Send file to peer
-                /pause <ip> <tranfer_id> - Pause the File Transfer
-                /resume <ip> <tranfer_id> - Resume the File Transfer
+                /pause <transfer_id> - Pause the File Transfer
+                /resume <transfer_id> - Resume the File Transfer
+                /transfers       - List active transfers
                 /list             - Show available peers
                 /help             - Show this help
-                """)
+                """
+                )
                 continue
 
             if message == "/list":
@@ -131,6 +145,9 @@ async def user_input():
                 if websocket:
                     connections[peer_ip] = websocket
                     asyncio.create_task(receive_peer_messages(websocket, peer_ip))
+                    print(f"Connected to {peer_ip}")
+                else:
+                    print(f"Failed to connect to {peer_ip}")
                 continue
 
             if message.startswith("/disconnect "):
@@ -166,17 +183,23 @@ async def user_input():
                 # Send file to a single peer
                 await send_file(file_path, {peer_ip: connections[peer_ip]})
                 continue
-            
+
             if message.startswith("/pause "):
                 parts = message[7:].split()
                 if len(parts) < 1:
                     print("Usage: /pause <transfer_id>")
                     continue
-            
+
                 transfer_id = parts[0]
                 if transfer_id in active_transfers:
-                    await active_transfers[transfer_id].pause()
-                    print(f"Transfer {transfer_id} paused")
+                    # Check if it's a FileTransfer object
+                    if isinstance(active_transfers[transfer_id], FileTransfer):
+                        await active_transfers[transfer_id].pause()
+                        print(f"Transfer {transfer_id} paused")
+                    else:
+                        print(
+                            f"Cannot pause transfer {transfer_id} - incompatible type"
+                        )
                 else:
                     print("Invalid transfer ID")
                 continue
@@ -186,146 +209,131 @@ async def user_input():
                 if len(parts) < 1:
                     print("Usage: /resume <transfer_id>")
                     continue
-                
+
                 transfer_id = parts[0]
                 if transfer_id in active_transfers:
-                    await active_transfers[transfer_id].resume()
-                    print(f"Transfer {transfer_id} resumed")
+                    # Check if it's a FileTransfer object
+                    if isinstance(active_transfers[transfer_id], FileTransfer):
+                        await active_transfers[transfer_id].resume()
+                        print(f"Transfer {transfer_id} resumed")
+                    else:
+                        print(
+                            f"Cannot resume transfer {transfer_id} - incompatible type"
+                        )
                 else:
                     print("Invalid transfer ID")
                 continue
-                
+
             if message == "/transfers":
                 print("\nActive Transfers:")
-                for transfer_id, transfer in active_transfers.items():
-                    status = transfer.state
-                    progress = f"{transfer.transferred_size}/{transfer.total_size}"
-                    print(f"- ID: {transfer_id} | {status} | Progress: {progress}")
+                if not active_transfers:
+                    print("No active transfers")
+                else:
+                    for transfer_id, transfer in active_transfers.items():
+                        if isinstance(transfer, FileTransfer):
+                            status = transfer.state
+                            progress = f"{transfer.transferred_size}/{transfer.total_size}"
+                            print(f"- ID: {transfer_id} | {status} | Progress: {progress}")
+                        else:
+                            print(
+                                f"- ID: {transfer_id} | Status: {transfer.get('status', 'unknown')}"
+                            )
+                continue
 
             if not message.startswith("/"):
-                    if connections:
-                        await send_message_to_peers(message)
-                    else:
-                        print("No peers connected. Use /connect <ip> to connect.")    
-                
-
-            # # Send chat message to all peers
-            # if connections:
-            #     for peer_ip, websocket in list(connections.items()):
-            #         try:
-            #             await websocket.send(f"MESSAGE {message}")
-            #         except Exception as e:
-            #             logging.exception(f"Error sending to {peer_ip}: {e}")
-            #             if peer_ip in connections:
-            #                 del connections[peer_ip]
-            # else:
-            #     print("No peers connected to send message to.")
+                if connections:
+                    await send_message_to_peers(message)
+                    await message_queue.put(f"You: {message}")
+                else:
+                    print("No peers connected. Use /connect <ip> to connect.")
 
         except Exception as e:
             logging.exception(f"Error in user_input: {e}")
             await asyncio.sleep(1)
 
+
 async def receive_peer_messages(websocket, peer_ip):
-    """Enhanced message and file transfer handling"""
+    """Dedicated message handling loop for each peer."""
     try:
-        while True:
-            message = await websocket.recv()
-            
-            # Handle different message types
+        async for message in websocket:  # Iterate over incoming messages
             try:
                 data = json.loads(message)
+                message_type = data.get("type")
+
+                # File transfer initialization
+                if message_type == "file_transfer_init":
+                    transfer_metadata = {
+                        "filename": data["filename"],
+                        "filesize": data["filesize"],
+                        "transfer_id": data["transfer_id"],
+                        "file_hash": data.get("file_hash"),
+                    }
+
+                    transfer = FileTransfer(transfer_metadata["filename"], peer_ip)
+                    transfer.transfer_id = data["transfer_id"]
+                    transfer.total_size = data["filesize"]
+                    transfer.state = TransferState.IN_PROGRESS
+
+                    active_transfers[data["transfer_id"]] = transfer
+
+                    await message_queue.put(
+                        f"📥 Preparing to receive '{data['filename']}' from {peer_ip}"
+                    )
+                    
+                    # Instead of creating a new task, handle the file reception directly
+                    # This will pause the message receiving loop while receiving the file
+                    await receive_file(websocket, transfer_metadata)
+
+                # Message handling for chat
+                elif message_type == "file_chunk":
+                    # Skip file chunks in the main message loop as they're handled by receive_file
+                    continue
+
+                # Message handling for chat
+                elif message_type == "MESSAGE":
+                    await message_queue.put(f"{peer_ip}: {data['message']}")
+
             except json.JSONDecodeError:
                 # Fallback to original message handling
                 if message.startswith("MESSAGE "):
                     await message_queue.put(f"{peer_ip}: {message[8:]}")
-                continue
 
-            # File transfer initialization
-            if data.get('type') == 'file_transfer_init':
-                # Prepare for file transfer
-                transfer_metadata = {
-                    'filename': data['filename'],
-                    'filesize': data['filesize'],
-                    'transfer_id': data['transfer_id'],
-                    'file_hash': data.get('file_hash')
-                }
-                
-                # Store transfer metadata
-                active_transfers[data['transfer_id']] = {
-                    'metadata': transfer_metadata,
-                    'status': 'pending'
-                }
-                
-                await message_queue.put(f"📥 Preparing to receive '{data['filename']}' from {peer_ip}")
-                asyncio.create_task(receive_file(websocket, transfer_metadata))
-
-            # File chunk transfer
-            elif data.get('type') == 'file_chunk':
-                transfer_id = data.get('transfer_id')
-                if transfer_id not in active_transfers:
-                    logging.warning(f"Unknown transfer ID: {transfer_id}")
-                    continue
-                # Receive file chunks
-                transfer_metadata = active_transfers[transfer_id]['metadata']
-                await receive_file(websocket, transfer_metadata)
-
-            # Transfer pause request
-            elif data.get('type') == 'transfer_pause':
-                transfer_id = data.get('transfer_id')
-                if transfer_id in active_transfers:
-                    active_transfers[transfer_id]['status'] = 'paused'
-                    await message_queue.put(f"⏸️ Transfer {transfer_id} paused")
-                else:
-                    logging.warning(f"Pause request for unknown transfer: {transfer_id}")
-
-            # Transfer resume request
-            elif data.get('type') == 'transfer_resume':
-                transfer_id = data.get('transfer_id')
-                if transfer_id in active_transfers:
-                    # Check if transfer was previously paused
-                    if active_transfers[transfer_id]['status'] == 'paused':
-                        active_transfers[transfer_id]['status'] = 'in_progress'
-                        await message_queue.put(f"▶️ Transfer {transfer_id} resumed")
-                    else:
-                        logging.warning(f"Resume request for non-paused transfer: {transfer_id}")
-                else:
-                    logging.warning(f"Resume request for unknown transfer: {transfer_id}")
-
-            # Message handling remains the same
-            elif data.get('type') == 'MESSAGE':
-                await message_queue.put(f"{peer_ip}: {data['message']}")
-    
     except websockets.exceptions.ConnectionClosed:
         logging.info(f"Connection closed with {peer_ip}")
+    except Exception as e:
+        logging.exception(f"Error receiving messages from {peer_ip}: {e}")
     finally:
         if peer_ip in connections:
             del connections[peer_ip]
+        await message_queue.put(f"Disconnected from {peer_ip}")
+
 
 async def get_own_ip():
-        """Get the most appropriate IP address"""
-        try:
-            # Prefer non-loopback, non-local IPs
-            for interface in netifaces.interfaces():
-                try:
-                    addrs = netifaces.ifaddresses(interface)
-                    if netifaces.AF_INET in addrs:
-                        ip = addrs[netifaces.AF_INET][0]['addr']
-                        # Skip loopback and local addresses
-                        if not (ip.startswith('127.') or ip.startswith('169.254.')):
-                            return ip
-                except ValueError:
-                    continue
-
-            # Fallback method
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    """Get the most appropriate IP address"""
+    try:
+        # Prefer non-loopback, non-local IPs
+        for interface in netifaces.interfaces():
             try:
-                s.connect(("8.8.8.8", 80))
-                return s.getsockname()[0]
-            except Exception:
-                return "127.0.0.1"
-        except Exception as e:
-            logging.error(f"IP detection failed: {e}")
+                addrs = netifaces.ifaddresses(interface)
+                if netifaces.AF_INET in addrs:
+                    ip = addrs[netifaces.AF_INET][0]["addr"]
+                    # Skip loopback and local addresses
+                    if not (ip.startswith("127.") or ip.startswith("169.254.")):
+                        return ip
+            except ValueError:
+                continue
+
+        # Fallback method
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        except Exception:
             return "127.0.0.1"
+    except Exception as e:
+        logging.error(f"IP detection failed: {e}")
+        return "127.0.0.1"
+
 
 async def display_messages():
     """Displays messages from the message queue."""
