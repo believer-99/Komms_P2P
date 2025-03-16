@@ -53,7 +53,7 @@ async def main():
             broadcast_task,
             discovery_task,
             cleanup_task,
-            progress_task
+            progress_task,
             maintain_peer_list(discovery)
         )
     except KeyboardInterrupt:
