@@ -54,6 +54,7 @@ async def main():
             discovery_task,
             cleanup_task,
             progress_task
+            maintain_peer_list(discovery)
         )
     except KeyboardInterrupt:
         logging.info("Keyboard interrupt received. Shutting down...")

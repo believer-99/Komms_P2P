@@ -204,8 +204,13 @@ async def user_input():
             if message == "/list":
                 print("\nAvailable peers:")
                 for peer in peer_list:
-                    status = "Connected" if peer in connections else "Available"
+                    status = "Connected" if peer in connections else "Discovered"
                     print(f"- {peer} ({status})")
+                for peer in connections:
+                    if peer not in peer_list:
+                        print(f"- {peer} (Connected)")
+                if not peer_list and not connections:
+                    print("No peers available")
                 continue
 
             if message.startswith("/connect "):
