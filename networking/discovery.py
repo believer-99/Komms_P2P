@@ -19,7 +19,6 @@ class PeerDiscovery:
         self.last_seen = {}  
 
     async def receive_broadcasts(self):
-        """Receives multicast messages and updates the peer list."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(('', DISCOVERY_PORT))
@@ -48,7 +47,6 @@ class PeerDiscovery:
             sock.close()
 
     async def cleanup_stale_peers(self):
-        """Remove peers not seen in 30 seconds"""
         async with self._lock:
             now = time.time()
             stale = [ip for ip, ts in self.last_seen.items() if now - ts > 30]
@@ -60,7 +58,6 @@ class PeerDiscovery:
                     del self.last_seen[ip]
 
     async def send_broadcasts(self):
-        """Sends a multicast discovery message."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
         sock.setblocking(False)
@@ -82,7 +79,6 @@ class PeerDiscovery:
             sock.close()
 
     async def _get_own_ip(self):
-        """Get the most appropriate IP address"""
         try:
           
             for interface in netifaces.interfaces():
