@@ -12,6 +12,8 @@ from networking.discovery import PeerDiscovery
 from networking.shared_state import active_transfers, message_queue, connections
 from networking.file_transfer import send_file, FileTransfer, TransferState, FileTransferManager
 
+peer_list = []
+
 async def connect_to_peer(peer_ip, port=8765):
     if peer_ip in connections:
         return None
@@ -60,6 +62,8 @@ async def maintain_peer_list(discovery_instance):
                 if connections[peer_ip].closed:
                     del connections[peer_ip]
             global peer_list
+            peer_list = []
+            pee
             peer_list = discovery_instance.peer_list.copy()
             await asyncio.sleep(5)
         except Exception as e:
