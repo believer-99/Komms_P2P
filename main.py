@@ -8,7 +8,8 @@ from networking.messaging import (
     display_messages,
     receive_peer_messages,
     handle_incoming_connection,
-    connections
+    connections,
+    maintain_peer_list
 )
 from networking.file_transfer import send_file, update_transfer_progress
 

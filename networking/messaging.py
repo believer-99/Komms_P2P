@@ -56,14 +56,12 @@ async def handle_incoming_connection(websocket, peer_ip):
         return False
 
 async def maintain_peer_list(discovery_instance):
+    global peer_list
     while True:
         try:
             for peer_ip in list(connections.keys()):
                 if connections[peer_ip].closed:
                     del connections[peer_ip]
-            global peer_list
-            peer_list = []
-            pee
             peer_list = discovery_instance.peer_list.copy()
             await asyncio.sleep(5)
         except Exception as e:
@@ -71,7 +69,6 @@ async def maintain_peer_list(discovery_instance):
             await asyncio.sleep(5)
 
 async def send_message_to_peers(message, target_ip=None):
-    # If target_ip is provided, send only to that peer
     if target_ip is not None:
         if target_ip in connections:
             try:
