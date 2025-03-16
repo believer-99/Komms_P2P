@@ -16,7 +16,7 @@ class PeerDiscovery:
     def __init__(self):
         self.peer_list = []
         self._lock = asyncio.Lock()
-        self.last_seen = {}  # Track last seen timestamps
+        self.last_seen = {}  
 
     async def receive_broadcasts(self):
         """Receives multicast messages and updates the peer list."""
@@ -84,19 +84,19 @@ class PeerDiscovery:
     async def _get_own_ip(self):
         """Get the most appropriate IP address"""
         try:
-            # Prefer non-loopback, non-local IPs
+          
             for interface in netifaces.interfaces():
                 try:
                     addrs = netifaces.ifaddresses(interface)
                     if netifaces.AF_INET in addrs:
                         ip = addrs[netifaces.AF_INET][0]['addr']
-                        # Skip loopback and local addresses
+                     
                         if not (ip.startswith('127.') or ip.startswith('169.254.')):
                             return ip
                 except ValueError:
                     continue
 
-            # Fallback method
+        
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
                 s.connect(("8.8.8.8", 80))
@@ -107,5 +107,4 @@ class PeerDiscovery:
             logging.error(f"IP detection failed: {e}")
             return "127.0.0.1"
 
-# Usage example
 discovery = PeerDiscovery()
