@@ -12,8 +12,6 @@ from networking.discovery import PeerDiscovery
 from networking.shared_state import active_transfers, message_queue, connections
 from networking.file_transfer import send_file, FileTransfer, TransferState, FileTransferManager
 
-peer_list = []
-
 async def connect_to_peer(peer_ip, port=8765):
     if peer_ip in connections:
         return None
@@ -62,14 +60,30 @@ async def maintain_peer_list(discovery_instance):
                 if connections[peer_ip].closed:
                     del connections[peer_ip]
             global peer_list
-            peer_list = []
             peer_list = discovery_instance.peer_list.copy()
             await asyncio.sleep(5)
         except Exception as e:
             logging.exception(f"Error in maintain_peer_list: {e}")
             await asyncio.sleep(5)
 
-async def send_message_to_peers(message):
+async def send_message_to_peers(message, target_ip=None):
+    # If target_ip is provided, send only to that peer
+    if target_ip is not None:
+        if target_ip in connections:
+            try:
+                await connections[target_ip].send(
+                    json.dumps({"type": "MESSAGE", "message": message})
+                )
+                return True
+            except Exception as e:
+                logging.error(f"Failed to send message to {target_ip}: {e}")
+                if not connections[target_ip].open:
+                    if target_ip in connections:
+                        del connections[target_ip]
+                return False
+        else:
+            return False
+    
     for peer_ip, websocket in list(connections.items()):
         try:
             await websocket.send(
@@ -80,6 +94,7 @@ async def send_message_to_peers(message):
             if not websocket.open:
                 if peer_ip in connections:
                     del connections[peer_ip]
+    return True
 
 async def receive_peer_messages(websocket, peer_ip):
     try:
@@ -170,7 +185,8 @@ async def user_input():
                     """
                 Available commands:
                 /connect <ip>    - Connect to specific peer
-                /disconnect <ip>  - Disconnect from peer
+                /disconnect <ip> - Disconnect from peer
+                /msg <ip> <message> - Send message to specific peer
                 /send <ip> <file> - Send file to peer
                 /pause <transfer_id> - Pause the File Transfer
                 /resume <transfer_id> - Resume the File Transfer
@@ -217,6 +233,24 @@ async def user_input():
                     print(f"Disconnected from {peer_ip}")
                 else:
                     print(f"Not connected to {peer_ip}")
+                continue
+
+            if message.startswith("/msg "):
+                parts = message[5:].split(" ", 1)
+                if len(parts) < 2:
+                    print("Usage: /msg <peer_ip> <message>")
+                    continue
+                    
+                peer_ip, msg_content = parts
+                if peer_ip not in connections:
+                    print(f"Not connected to {peer_ip}")
+                    continue
+                
+                success = await send_message_to_peers(msg_content, target_ip=peer_ip)
+                if success:
+                    await message_queue.put(f"You → {peer_ip}: {msg_content}")
+                else:
+                    print(f"Failed to send message to {peer_ip}")
                 continue
 
             if message.startswith("/send "):
@@ -270,10 +304,11 @@ async def user_input():
                             print(f"- ID: {transfer_id} | Status: {transfer.get('status', 'unknown')}")
                 continue
 
+          
             if not message.startswith("/"):
                 if connections:
                     await send_message_to_peers(message)
-                    await message_queue.put(f"You: {message}")
+                    await message_queue.put(f"You (to all): {message}")
                 else:
                     print("No peers connected. Use /connect <ip> to connect.")
 
