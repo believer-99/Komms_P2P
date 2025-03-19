@@ -61,8 +61,13 @@ async def maintain_peer_list(discovery_instance):
     while True:
         try:
             for peer_ip in list(connections.keys()):
-                if not connections[peer_ip].open:  # Changed .closed to not .open
+                try:
+                    await connections[peer_ip].send(None)  # or any lightweight operation
+                except websockets.exceptions.ConnectionClosed:
                     del connections[peer_ip]
+                except Exception as e:
+                    logging.exception(f"Unexpected error checking connection to {peer_ip}: {e}")
+                    del connections[peer_ip] #remove the possibly corrupted entry
             peer_list = discovery_instance.peer_list.copy()
             await asyncio.sleep(5)
         except Exception as e:
