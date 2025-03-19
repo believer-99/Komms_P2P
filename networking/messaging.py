@@ -56,13 +56,13 @@ async def handle_incoming_connection(websocket, peer_ip):
         logging.exception(f"Error in connection handshake: {e}")
         return False
 
-async def maintain_peer_list(discovery_instance):
+aasync def maintain_peer_list(discovery_instance):
     global peer_list
     while True:
         try:
             for peer_ip in list(connections.keys()):
                 try:
-                    await connections[peer_ip].send(None)  # or any lightweight operation
+                    await connections[peer_ip].ping()  # Send a ping message
                 except websockets.exceptions.ConnectionClosed:
                     del connections[peer_ip]
                 except Exception as e:
