@@ -1,75 +1,50 @@
+import asyncio
 import socket
 import struct
-import logging
-import asyncio
 import time
-import netifaces
-import json
+import logging
 
-
-DISCOVERY_PORT = 50001
-MULTICAST_GROUP = "224.0.0.1"
-DISCOVERY_MESSAGE = "P2P_DISCOVERY"
-
+# Constants
+MULTICAST_GROUP = "224.0.0.1"  # Multicast group address
+DISCOVERY_PORT = 8766          # Port for discovery
+DISCOVERY_MESSAGE = "P2P_DISCOVERY"  # Base discovery message
 
 class PeerDiscovery:
     def __init__(self):
         self.peer_list = []
+        self.last_seen = {}
         self._lock = asyncio.Lock()
-        self.last_seen = {}  
 
-    async def receive_broadcasts(self):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(('', DISCOVERY_PORT))
-        mreq = struct.pack("4sl", socket.inet_aton(MULTICAST_GROUP), socket.INADDR_ANY)
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-        sock.setblocking(False)
-        loop = asyncio.get_event_loop()
-
+    async def _get_own_ip(self):
+        """Get the local IP address of the machine."""
         try:
-            while True:
-                try:
-                    data, addr = await loop.sock_recvfrom(sock, 1024)
-                    if data.decode() == DISCOVERY_MESSAGE and addr[0] != await self._get_own_ip():
-                        async with self._lock:
-                            ip = addr[0]
-                            self.last_seen[ip] = time.time()
-                            if ip not in self.peer_list:
-                                logging.info(f"Found peer at {ip}")
-                                self.peer_list.append(ip)
-                except BlockingIOError:
-                    await asyncio.sleep(0.1)
-                except Exception as e:
-                    logging.exception(f"Error in receive_broadcasts: {e}")
-                    await asyncio.sleep(1)
-        finally:
-            sock.close()
-
-    async def cleanup_stale_peers(self):
-        async with self._lock:
-            now = time.time()
-            stale = [ip for ip, ts in self.last_seen.items() if now - ts > 30]
-            for ip in stale:
-                if ip in self.peer_list:
-                    logging.info(f"Removing stale peer: {ip}")
-                    self.peer_list.remove(ip)
-                if ip in self.last_seen:
-                    del self.last_seen[ip]
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # Connect to a remote address to determine the local IP (doesn’t send data)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception as e:
+            logging.error(f"Error getting own IP: {e}")
+            return "127.0.0.1"  # Fallback to localhost
 
     async def send_broadcasts(self):
+        """Send periodic multicast discovery messages with the local IP."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 0)  # Disable loopback
         sock.setblocking(False)
         loop = asyncio.get_event_loop()
 
         try:
+            own_ip = await self._get_own_ip()
+            discovery_message = f"{DISCOVERY_MESSAGE} {own_ip}"
             logging.info("Starting discovery broadcasts...")
             while True:
                 try:
-                    await loop.sock_sendto(sock, DISCOVERY_MESSAGE.encode(), (MULTICAST_GROUP, DISCOVERY_PORT))
+                    await loop.sock_sendto(sock, discovery_message.encode(), (MULTICAST_GROUP, DISCOVERY_PORT))
                     logging.debug("Broadcasted Discovery Message")
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(5)  # Send every 5 seconds
                 except BlockingIOError:
                     await asyncio.sleep(0.1)
                 except Exception as e:
@@ -78,29 +53,51 @@ class PeerDiscovery:
         finally:
             sock.close()
 
-    async def _get_own_ip(self):
+    async def receive_broadcasts(self):
+        """Receive multicast discovery messages and update peer list."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(('', DISCOVERY_PORT))
+        mreq = struct.pack("4sl", socket.inet_aton(MULTICAST_GROUP), socket.INADDR_ANY)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 0)  # Disable loopback
+        sock.setblocking(False)
+        loop = asyncio.get_event_loop()
+
         try:
-          
-            for interface in netifaces.interfaces():
+            own_ip = await self._get_own_ip()
+            while True:
                 try:
-                    addrs = netifaces.ifaddresses(interface)
-                    if netifaces.AF_INET in addrs:
-                        ip = addrs[netifaces.AF_INET][0]['addr']
-                     
-                        if not (ip.startswith('127.') or ip.startswith('169.254.')):
-                            return ip
-                except ValueError:
-                    continue
+                    data, addr = await loop.sock_recvfrom(sock, 1024)
+                    message = data.decode()
+                    if message.startswith(DISCOVERY_MESSAGE):
+                        parts = message.split(" ", 1)
+                        if len(parts) == 2:
+                            sender_ip = parts[1]
+                            if sender_ip != own_ip:
+                                async with self._lock:
+                                    ip = addr[0]
+                                    self.last_seen[ip] = time.time()
+                                    if ip not in self.peer_list:
+                                        logging.info(f"Found peer at {ip}")
+                                        self.peer_list.append(ip)
+                except BlockingIOError:
+                    await asyncio.sleep(0.1)
+                except Exception as e:
+                    logging.exception(f"Error in receive_broadcasts: {e}")
+                    await asyncio.sleep(1)
+        finally:
+            sock.close()
 
-        
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            try:
-                s.connect(("8.8.8.8", 80))
-                return s.getsockname()[0]
-            except Exception:
-                return "127.0.0.1"
-        except Exception as e:
-            logging.error(f"IP detection failed: {e}")
-            return "127.0.0.1"
+    async def start(self):
+        """Start the peer discovery process."""
+        await asyncio.gather(
+            self.send_broadcasts(),
+            self.receive_broadcasts()
+        )
 
-discovery = PeerDiscovery()
+# Example usage (if run standalone)
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    discovery = PeerDiscovery()
+    asyncio.run(discovery.start())
