@@ -1,3 +1,4 @@
+# networking/messaging.py
 import asyncio
 import logging
 import websockets
@@ -60,7 +61,7 @@ async def maintain_peer_list(discovery_instance):
     while True:
         try:
             for peer_ip in list(connections.keys()):
-                if connections[peer_ip].closed:
+                if not connections[peer_ip].open:  # Changed .closed to not .open
                     del connections[peer_ip]
             peer_list = discovery_instance.peer_list.copy()
             await asyncio.sleep(5)
@@ -71,18 +72,27 @@ async def maintain_peer_list(discovery_instance):
 async def send_message_to_peers(message, target_ip=None):
     if target_ip is not None:
         if target_ip in connections:
-            try:
-                await connections[target_ip].send(
-                    json.dumps({"type": "MESSAGE", "message": message})
-                )
-                return True
-            except Exception as e:
-                logging.error(f"Failed to send message to {target_ip}: {e}")
-                if not connections[target_ip].open:
-                    if target_ip in connections:
-                        del connections[target_ip]
+            # CHECK IF WEBSOCKET IS STILL OPEN
+            if connections[target_ip].open: # ADDED CHECK HERE
+                try:
+                    await connections[target_ip].send(
+                        json.dumps({"type": "MESSAGE", "message": message})
+                    )
+                    return True
+                except Exception as e:
+                    logging.error(f"Failed to send message to {target_ip}: {e}")
+                    if not connections[target_ip].open:
+                        if target_ip in connections:
+                            del connections[target_ip]
+                    return False
+            else:
+                logging.warning(f"Websocket to {target_ip} is closed.")
+                del connections[target_ip]  # Remove closed connection
                 return False
+
+
         else:
+            print(f"No peers connected. Use /connect <ip> to connect.")
             return False
     
     for peer_ip, websocket in list(connections.items()):
@@ -248,7 +258,8 @@ async def user_input():
                     continue
                     
                 peer_ip, msg_content = parts
-                if peer_ip not in connections:
+                # CHECK IF PEER IS IN CONNECTIONS AND IF THE WEBSOCKET IS OPEN.
+                if peer_ip not in connections or not connections[peer_ip].open:
                     print(f"Not connected to {peer_ip}")
                     continue
                 
