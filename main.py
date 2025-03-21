@@ -9,9 +9,11 @@ from networking.messaging import (
     receive_peer_messages,
     handle_incoming_connection,
     connections,
-    maintain_peer_list
+    maintain_peer_list,
+    initialize_user_config,
 )
 from networking.file_transfer import send_file, update_transfer_progress
+from networking.shared_state import peer_usernames, peer_public_keys
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,6 +34,8 @@ async def handle_peer_connection(websocket, path=None):
             del connections[peer_ip]
 
 async def main():
+    await initialize_user_config()
+
     discovery = PeerDiscovery()
     broadcast_task = asyncio.create_task(discovery.send_broadcasts())
     discovery_task = asyncio.create_task(discovery.receive_broadcasts())
@@ -55,7 +59,7 @@ async def main():
             discovery_task,
             cleanup_task,
             progress_task,
-            maintain_peer_list(discovery)
+            maintain_peer_list(discovery),
         )
     except KeyboardInterrupt:
         logging.info("Keyboard interrupt received. Shutting down...")
@@ -67,6 +71,10 @@ async def main():
                 await websocket.close()
             except Exception as e:
                 logging.error(f"Error closing connection: {e}")
+        # Clear temporary mappings
+        connections.clear()
+        peer_public_keys.clear()
+        peer_usernames.clear()
 
 if __name__ == "__main__":
     try:
