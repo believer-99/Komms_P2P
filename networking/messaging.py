@@ -1,4 +1,3 @@
-# networking/messaging.py
 import asyncio
 import logging
 import websockets
@@ -12,6 +11,7 @@ from aioconsole import ainput
 from networking.discovery import PeerDiscovery
 from networking.shared_state import active_transfers, message_queue, connections
 from networking.file_transfer import send_file, FileTransfer, TransferState, FileTransferManager
+from websockets.connection import State  # Import State enum
 
 peer_list = []
 
@@ -67,7 +67,7 @@ async def maintain_peer_list(discovery_instance):
                     del connections[peer_ip]
                 except Exception as e:
                     logging.exception(f"Unexpected error checking connection to {peer_ip}: {e}")
-                    del connections[peer_ip] #remove the possibly corrupted entry
+                    del connections[peer_ip]  # remove the possibly corrupted entry
             peer_list = discovery_instance.peer_list.copy()
             await asyncio.sleep(5)
         except Exception as e:
@@ -77,8 +77,8 @@ async def maintain_peer_list(discovery_instance):
 async def send_message_to_peers(message, target_ip=None):
     if target_ip is not None:
         if target_ip in connections:
-            # CHECK IF WEBSOCKET IS STILL OPEN
-            if connections[target_ip].open: # ADDED CHECK HERE
+            # Check if WebSocket is still open using state
+            if connections[target_ip].state == State.OPEN:
                 try:
                     await connections[target_ip].send(
                         json.dumps({"type": "MESSAGE", "message": message})
@@ -86,30 +86,33 @@ async def send_message_to_peers(message, target_ip=None):
                     return True
                 except Exception as e:
                     logging.error(f"Failed to send message to {target_ip}: {e}")
-                    if not connections[target_ip].open:
+                    if connections[target_ip].state != State.OPEN:  # Check state again after failure
                         if target_ip in connections:
                             del connections[target_ip]
                     return False
             else:
                 logging.warning(f"Websocket to {target_ip} is closed.")
-                del connections[target_ip]  # Remove closed connection
+                if target_ip in connections:
+                    del connections[target_ip]  # Remove closed connection
                 return False
-
-
         else:
             print(f"No peers connected. Use /connect <ip> to connect.")
             return False
     
     for peer_ip, websocket in list(connections.items()):
-        try:
-            await websocket.send(
-                json.dumps({"type": "MESSAGE", "message": message})
-            )
-        except Exception as e:
-            logging.error(f"Failed to send message to {peer_ip}: {e}")
-            if not websocket.open:
-                if peer_ip in connections:
-                    del connections[peer_ip]
+        if websocket.state == State.OPEN:  # Check state before sending
+            try:
+                await websocket.send(
+                    json.dumps({"type": "MESSAGE", "message": message})
+                )
+            except Exception as e:
+                logging.error(f"Failed to send message to {peer_ip}: {e}")
+                if websocket.state != State.OPEN:
+                    if peer_ip in connections:
+                        del connections[peer_ip]
+        else:
+            if peer_ip in connections:
+                del connections[peer_ip]
     return True
 
 async def receive_peer_messages(websocket, peer_ip):
@@ -263,8 +266,8 @@ async def user_input():
                     continue
                     
                 peer_ip, msg_content = parts
-                # CHECK IF PEER IS IN CONNECTIONS AND IF THE WEBSOCKET IS OPEN.
-                if peer_ip not in connections or not connections[peer_ip].open:
+                # Check if peer is in connections and if the WebSocket is open
+                if peer_ip not in connections or connections[peer_ip].state != State.OPEN:
                     print(f"Not connected to {peer_ip}")
                     continue
                 
@@ -326,7 +329,6 @@ async def user_input():
                             print(f"- ID: {transfer_id} | Status: {transfer.get('status', 'unknown')}")
                 continue
 
-          
             if not message.startswith("/"):
                 if connections:
                     await send_message_to_peers(message)
