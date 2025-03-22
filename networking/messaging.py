@@ -16,7 +16,7 @@ from networking.shared_state import active_transfers, message_queue, connections
 from networking.file_transfer import send_file, FileTransfer, TransferState, FileTransferManager
 from websockets.connection import State
 
-peer_list = []
+peer_list = {}  # Now a dict: {ip: (username, last_seen)}
 
 def get_mac_address():
     """Get the MAC address of the primary network interface."""
@@ -27,7 +27,7 @@ def get_mac_address():
                 mac = addrs[netifaces.AF_LINK][0]["addr"]
                 if mac and mac != "00:00:00:00:00:00":
                     return mac.replace(":", "").lower()
-        return str(uuid.uuid4()).replace("-", "")  # Fallback to UUID if no MAC found
+        return str(uuid.uuid4()).replace("-", "")
     except Exception as e:
         logging.error(f"Failed to get MAC address: {e}")
         return str(uuid.uuid4()).replace("-", "")
@@ -38,13 +38,11 @@ async def initialize_user_config():
     if os.path.exists(config_file):
         with open(config_file, "r") as f:
             loaded_data = json.load(f)
-        # Verify device_id matches current device
         if loaded_data.get("device_id") == mac:
             user_data.update(loaded_data)
             user_data["public_key"] = serialization.load_pem_public_key(user_data["public_key"].encode())
             user_data["private_key"] = serialization.load_pem_private_key(user_data["private_key"].encode(), password=None)
         else:
-            # Device ID mismatch, prompt for new username
             await create_new_user_config(config_file, mac)
     else:
         await create_new_user_config(config_file, mac)
@@ -55,7 +53,7 @@ async def create_new_user_config(config_file, mac):
     internal_username = f"{original_username}_{uuid.uuid4()}"
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public_key = private_key.public_key()
-    user_data.clear()  # Clear existing data
+    user_data.clear()
     user_data.update({
         "original_username": original_username,
         "internal_username": internal_username,
@@ -325,16 +323,16 @@ async def receive_peer_messages(websocket, peer_ip):
         logging.exception(f"Error receiving messages from {peer_ip}: {e}")
     finally:
         if peer_ip in connections:
+            peer_username = next((u for u, ip in peer_usernames.items() if ip == peer_ip), "unknown")
             del connections[peer_ip]
             del peer_public_keys[peer_ip]
             for username, ip in list(peer_usernames.items()):
                 if ip == peer_ip:
                     del peer_usernames[username]
-        peer_username = next((u for u, ip in peer_usernames.items() if ip == peer_ip), "unknown")
-        await message_queue.put(f"{user_data['original_username']} disconnected from {peer_username}")
+            await message_queue.put(f"{user_data['original_username']} disconnected from {peer_username}")
 
 async def user_input():
-    await asyncio.sleep(1)  # Ensure user_data is initialized
+    await asyncio.sleep(1)
     while True:
         try:
             message = await ainput(f"{user_data['original_username']} > ")
@@ -359,15 +357,10 @@ async def user_input():
 
             if message == "/list":
                 print("\nAvailable peers:")
-                discovered_ips = set(peer_list)
-                connected_usernames = set(peer_usernames.keys())
-                for username in connected_usernames:
-                    ip = peer_usernames[username]
+                for ip, (username, _) in peer_list.items():
                     status = "Connected" if ip in connections else "Discovered"
-                    print(f"- {username} ({status})")
-                for ip in discovered_ips - set(peer_usernames.values()):
-                    print(f"- {ip} (Discovered, not yet connected)")
-                if not peer_list and not peer_usernames:
+                    print(f"- {username} ({ip}, {status})")
+                if not peer_list:
                     print("No peers available")
                 continue
 
@@ -379,18 +372,19 @@ async def user_input():
                 if target_username in peer_usernames:
                     print(f"Already connected to {target_username}")
                     continue
-                discovered_ips = set(peer_list)
                 peer_ip = None
-                for ip in discovered_ips:
-                    websocket = await connect_to_peer(ip)
-                    if websocket:
-                        connections[ip] = websocket
-                        asyncio.create_task(receive_peer_messages(websocket, ip))
-                        if target_username in peer_usernames:
-                            peer_ip = peer_usernames[target_username]
-                            break
+                for ip, (username, _) in peer_list.items():
+                    if username == target_username:
+                        peer_ip = ip
+                        break
                 if peer_ip:
-                    print(f"{user_data['original_username']} connected to {target_username}")
+                    websocket = await connect_to_peer(peer_ip)
+                    if websocket:
+                        connections[peer_ip] = websocket
+                        asyncio.create_task(receive_peer_messages(websocket, peer_ip))
+                        print(f"{user_data['original_username']} connected to {target_username}")
+                    else:
+                        print(f"Failed to connect to {target_username}")
                 else:
                     print(f"No such peer exists: {target_username}")
                 continue
