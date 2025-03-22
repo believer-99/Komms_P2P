@@ -52,7 +52,7 @@ async def initialize_user_config():
             await create_new_user_config(config_file_path) # Pass the full path to create
     else:
         await create_new_user_config(config_file_path)  # Pass the full path to create
-    print(f"Welcome, {user_data['original_username']}")
+        print(f"Welcome, {user_data['original_username']}")
 
 
 
