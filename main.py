@@ -12,9 +12,10 @@ from networking.messaging import (
     maintain_peer_list,
     initialize_user_config,
 )
-from networking.file_transfer import send_file, update_transfer_progress
+from networking.file_transfer import update_transfer_progress
 from networking.shared_state import peer_usernames, peer_public_keys, shutdown_event
 
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -22,6 +23,7 @@ logging.basicConfig(
 )
 
 async def handle_peer_connection(websocket, path=None):
+    """Handle incoming WebSocket connections."""
     peer_ip = websocket.remote_address[0]
     logging.info(f"New connection from {peer_ip}")
     try:
@@ -34,17 +36,20 @@ async def handle_peer_connection(websocket, path=None):
             del connections[peer_ip]
 
 async def main():
+    """Main application loop."""
     await initialize_user_config()
 
     discovery = PeerDiscovery()
+    # Define all tasks
     broadcast_task = asyncio.create_task(discovery.send_broadcasts())
     discovery_task = asyncio.create_task(discovery.receive_broadcasts())
     cleanup_task = asyncio.create_task(discovery.cleanup_stale_peers())
     progress_task = asyncio.create_task(update_transfer_progress())
     maintain_task = asyncio.create_task(maintain_peer_list(discovery))
-    input_task = asyncio.create_task(user_input())
+    input_task = asyncio.create_task(user_input(discovery))
     display_task = asyncio.create_task(display_messages())
 
+    # Start WebSocket server
     server = await websockets.serve(
         handle_peer_connection,
         "0.0.0.0",
@@ -74,21 +79,22 @@ async def main():
     finally:
         logging.info("Initiating shutdown process...")
 
+        # Cancel all tasks
         for task in tasks:
             if not task.done():
                 task.cancel()
                 logging.info(f"Canceled task: {task.get_name()}")
 
-        try:
-            await asyncio.wait(tasks, timeout=2.0)
-        except asyncio.CancelledError:
-            pass
+        # Wait for tasks to finish with a timeout
+        await asyncio.wait(tasks, timeout=2.0)
 
+        # Close WebSocket server
         logging.info("Closing WebSocket server...")
         server.close()
         await server.wait_closed()
         logging.info("WebSocket server closed.")
 
+        # Close all peer connections
         for peer_ip, websocket in list(connections.items()):
             try:
                 if websocket.open:
@@ -100,9 +106,11 @@ async def main():
         peer_public_keys.clear()
         peer_usernames.clear()
 
+        # Stop discovery
         logging.info("Stopping discovery...")
         discovery.stop()
 
+        # Clean up file transfers
         from networking.file_transfer import active_transfers
         for transfer_id, transfer in list(active_transfers.items()):
             if transfer.file_handle:

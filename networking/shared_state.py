@@ -1,13 +1,10 @@
 import asyncio
 from collections import defaultdict
 
-# Shared state variables
+shutdown_event = asyncio.Event()
 active_transfers = {}
 message_queue = asyncio.Queue()
-connections = {}
+connections = {}  # {peer_ip: websocket}
 user_data = {}
-peer_public_keys = {}
-peer_usernames = {}
-
-# Shutdown event for graceful exit
-shutdown_event = asyncio.Event()
+peer_public_keys = {}  # {peer_ip: public_key}
+peer_usernames = {}  # {username: peer_ip}
