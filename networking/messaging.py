@@ -2,6 +2,7 @@ import asyncio
 import logging
 import websockets
 import os
+import platform
 import json
 import hashlib
 import aiofiles
@@ -16,80 +17,67 @@ from networking.shared_state import (
 )
 from networking.file_transfer import send_file, FileTransfer, TransferState
 from websockets.connection import State
+from appdirs import user_config_dir
 
 # Global state
 peer_list = {}  # {ip: (username, last_seen)}
 connection_denials = {}  # {target_username: {requesting_username: denial_count}}
 pending_approvals = {}  # {peer_ip: asyncio.Future}
 
-def get_mac_address():
-    """Get a stable device identifier."""
-    try:
-        for interface in netifaces.interfaces():
-            addrs = netifaces.ifaddresses(interface)
-            if netifaces.AF_LINK in addrs:
-                mac = addrs[netifaces.AF_LINK][0]["addr"]
-                if mac and mac != "00:00:00:00:00:00":
-                    return mac.replace(":", "").lower()
-        uuid_file = "device_uuid.txt"
-        if os.path.exists(uuid_file):
-            with open(uuid_file, "r") as f:
-                return f.read().strip()
-        else:
-            stable_uuid = str(uuid.uuid4()).replace("-", "")
-            with open(uuid_file, "w") as f:
-                f.write(stable_uuid)
-            return stable_uuid
-    except Exception:
-        uuid_file = "device_uuid.txt"
-        if os.path.exists(uuid_file):
-            with open(uuid_file, "r") as f:
-                return f.read().strip()
-        else:
-            stable_uuid = str(uuid.uuid4()).replace("-", "")
-            with open(uuid_file, "w") as f:
-                f.write(stable_uuid)
-            return stable_uuid
+def get_config_directory():
+    """Determine the appropriate config directory based on the OS."""
+    appname = "P2PChat"  # Your application name (use a consistent name)
+    appauthor = False  # Set False to prevent the author name from being added
+
+    return user_config_dir(appname, appauthor)
 
 async def initialize_user_config():
-    """Load or create user configuration."""
-    mac = get_mac_address()
-    config_file = f"user_config_{mac}.json"
-    if os.path.exists(config_file):
-        with open(config_file, "r") as f:
-            loaded_data = json.load(f)
-        if loaded_data.get("device_id") == mac:
+    """Load or create user configuration, using a user-specific config directory."""
+    config_dir = get_config_directory()
+    os.makedirs(config_dir, exist_ok=True)  # Ensure directory exists
+
+    config_file_path = os.path.join(config_dir, "user_config.json")
+
+    if os.path.exists(config_file_path):
+        try:
+            with open(config_file_path, "r") as f:
+                loaded_data = json.load(f)
             user_data.update(loaded_data)
             user_data["public_key"] = serialization.load_pem_public_key(user_data["public_key"].encode())
             user_data["private_key"] = serialization.load_pem_private_key(user_data["private_key"].encode(), password=None)
-        else:
-            await create_new_user_config(config_file, mac)
+            print(f"Welcome back, {user_data['original_username']}!")
+        except Exception as e:
+            print(f"Error loading config, creating new one: {e}")
+            await create_new_user_config(config_file_path) # Pass the full path to create
     else:
-        await create_new_user_config(config_file, mac)
-    print(f"Welcome, {user_data['original_username']} (Device ID: {user_data['device_id']})")
+        await create_new_user_config(config_file_path)  # Pass the full path to create
+    print(f"Welcome, {user_data['original_username']}")
 
-async def create_new_user_config(config_file, mac, username=None):
-    """Create a new user configuration file."""
+
+
+async def create_new_user_config(config_file_path, username=None):
+    """Create a new user configuration file in the specified path."""
     if username is None:
         original_username = await ainput("Enter your username: ")
     else:
         original_username = username
-    internal_username = f"{original_username}_{uuid.uuid4()}"
+
+    internal_username = f"{original_username}_{uuid.uuid4()}"  # Generate unique internal username
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public_key = private_key.public_key()
-    user_data.clear()
+
+    user_data.clear()  # Clear any existing user data
     user_data.update({
         "original_username": original_username,
         "internal_username": internal_username,
-        "device_id": mac,
         "public_key": public_key,
         "private_key": private_key,
     })
-    with open(config_file, "w") as f:
+
+    with open(config_file_path, "w") as f:
         json.dump({
             "original_username": original_username,
             "internal_username": internal_username,
-            "device_id": mac,
             "public_key": public_key.public_bytes(
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PublicFormat.SubjectPublicKeyInfo
