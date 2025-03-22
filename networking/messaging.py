@@ -122,6 +122,7 @@ async def connect_to_peer(peer_ip, requesting_username, target_username, port=87
                 "target_username": target_username,
                 "key": public_key_pem
             }))
+            # Wait for approval response
             approval_response = await websocket.recv()
             approval_data = json.loads(approval_response)
             if approval_data["type"] == "CONNECTION_RESPONSE" and approval_data["approved"]:
@@ -142,15 +143,21 @@ async def connect_to_peer(peer_ip, requesting_username, target_username, port=87
                     return websocket
                 else:
                     await websocket.close()
+                    print(f"Connection to {target_username} failed: Invalid identity response.")
                     return None
             else:
                 await websocket.close()
+                print(f"Connection to {target_username} was denied by the peer.")
                 return None
         else:
             await websocket.close()
+            print(f"Connection to {target_username} failed: No INIT_ACK received.")
             return None
     except Exception as e:
         logging.exception(f"Failed to connect to {peer_ip}: {e}")
+        print(f"Connection to {target_username} failed: {str(e)}")
+        if 'websocket' in locals():
+            await websocket.close()
         return None
 
 async def handle_incoming_connection(websocket, peer_ip):
@@ -287,7 +294,7 @@ async def send_message_to_peers(message, target_username=None):
                     await connections[peer_ip].send(
                         json.dumps({"type": "MESSAGE", "message": encrypted_message})
                     )
-                    logging.info(f"{user_data['original_username']} sent message to {target_username} ({peer_ip})")
+                    # Removed logging.info here to avoid cluttering console
                     return True
                 except Exception as e:
                     logging.error(f"Failed to send message to {target_username} ({peer_ip}): {e}")
@@ -313,7 +320,7 @@ async def send_message_to_peers(message, target_username=None):
                 await websocket.send(
                     json.dumps({"type": "MESSAGE", "message": encrypted_msg})
                 )
-                logging.info(f"{user_data['original_username']} sent message to {peer_username} ({peer_ip})")
+                # Removed logging.info here to avoid cluttering console
             except Exception as e:
                 logging.error(f"Failed to send message to {peer_ip}: {e}")
     return True
@@ -436,11 +443,13 @@ async def user_input(discovery):
                         peer_ip = ip
                         break
                 if peer_ip:
+                    print(f"Connection request to {target_username} is pending approval...")
                     websocket = await connect_to_peer(peer_ip, requesting_username, target_username)
                     if websocket:
                         connections[peer_ip] = websocket
                         asyncio.create_task(receive_peer_messages(websocket, peer_ip))
                         print(f"Connected to {target_username}")
+                    # No else clause here; connect_to_peer handles denial/failure messages
                 else:
                     print(f"No such peer: {target_username}")
                 continue
