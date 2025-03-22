@@ -31,6 +31,7 @@ def get_config_directory():
 
     return user_config_dir(appname, appauthor)
 
+
 async def initialize_user_config():
     """Load or create user configuration, using a user-specific config directory."""
     config_dir = get_config_directory()
@@ -65,6 +66,7 @@ async def create_new_user_config(config_file_path, username=None):
     internal_username = f"{original_username}_{uuid.uuid4()}"  # Generate unique internal username
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public_key = private_key.public_key()
+    device_id = str(uuid.uuid4())  # Generate unique device ID
 
     user_data.clear()  # Clear any existing user data
     user_data.update({
@@ -72,6 +74,7 @@ async def create_new_user_config(config_file_path, username=None):
         "internal_username": internal_username,
         "public_key": public_key,
         "private_key": private_key,
+        "device_id": device_id
     })
 
     with open(config_file_path, "w") as f:
@@ -87,6 +90,7 @@ async def create_new_user_config(config_file_path, username=None):
                 format=serialization.PrivateFormat.PKCS8,
                 encryption_algorithm=serialization.NoEncryption()
             ).decode(),
+            "device_id": device_id
         }, f)
 
 async def connect_to_peer(peer_ip, requesting_username, target_username, port=8765):
