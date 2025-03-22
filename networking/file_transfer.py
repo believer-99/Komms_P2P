@@ -1,163 +1,139 @@
 import asyncio
-import logging
 import os
+import uuid
 import aiofiles
 import hashlib
-import platform
-import uuid
+import logging
 import json
-from networking.shared_state import active_transfers
+from enum import Enum
+from networking.shared_state import active_transfers, shutdown_event
 
-class TransferState:
-    PENDING = "pending"
+class TransferState(Enum):
     IN_PROGRESS = "in_progress"
     PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
-
-class FileTransferManager:
-    @staticmethod
-    def calculate_file_hash(path, algorithm="sha256", chunk_size=4096):
-        try:
-            hash_algo = hashlib.new(algorithm)
-            with open(path, "rb") as f:
-                for chunk in iter(lambda: f.read(chunk_size), b""):
-                    hash_algo.update(chunk)
-            return hash_algo.hexdigest()
-        except Exception as e:
-            logging.error(f"Hash calculation failed for {path}: {e}")
-            return None
-
-    @staticmethod
-    def get_download_directory():
-        system = platform.system()
-        if system in ("Windows", "Darwin"):
-            download_dir = os.path.join(os.path.expanduser("~"), "Downloads")
-        else:
-            download_dir = os.path.join(os.path.expanduser("~"), "Downloads")
-        p2p_download_dir = os.path.join(download_dir, "P2P_Downloads")
-        os.makedirs(p2p_download_dir, exist_ok=True)
-        return p2p_download_dir
 
 class FileTransfer:
     def __init__(self, file_path, peer_ip, direction="send"):
         self.file_path = file_path
         self.peer_ip = peer_ip
         self.direction = direction
-        self.total_size = 0
-        if direction == "send" and os.path.exists(file_path):
-            self.total_size = os.path.getsize(file_path)
-        self.transferred_size = 0
-        self.state = TransferState.PENDING
         self.transfer_id = str(uuid.uuid4())
-        self.chunk_size = 64 * 1024
-        self.paused = False
+        self.total_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+        self.transferred_size = 0
+        self.file_handle = None
+        self.state = TransferState.IN_PROGRESS
+        self.hash_algo = hashlib.sha256()
+        self.expected_hash = None
         self.condition = asyncio.Condition()
-        self.file_handle = None  # Used for receiving
-        self.expected_hash = None  # Used for receiving
-        self.hash_algo = None  # Used for receiving
 
-    async def pause(self) -> None:
+    async def pause(self):
+        """Pause the file transfer."""
         async with self.condition:
             if self.state == TransferState.IN_PROGRESS:
-                self.paused = True
                 self.state = TransferState.PAUSED
-                logging.info(f"Transfer {self.transfer_id} paused")
+                logging.info(f"Transfer {self.transfer_id} paused.")
 
-    async def resume(self) -> None:
+    async def resume(self):
+        """Resume the file transfer."""
         async with self.condition:
             if self.state == TransferState.PAUSED:
-                self.paused = False
                 self.state = TransferState.IN_PROGRESS
                 self.condition.notify_all()
-                logging.info(f"Transfer {self.transfer_id} resumed")
+                logging.info(f"Transfer {self.transfer_id} resumed.")
 
-async def send_file(file_path: str, connections: dict) -> dict:
-    if not connections:
-        logging.warning("No peers connected to send the file.")
-        return {}
+async def compute_hash(file_path):
+    """Compute the SHA-256 hash of a file in chunks asynchronously."""
+    hash_algo = hashlib.sha256()
+    async with aiofiles.open(file_path, "rb") as f:
+        while True:
+            chunk = await f.read(1024 * 1024)  # Read 1MB chunks
+            if not chunk:
+                break
+            hash_algo.update(chunk)  # Update hash with each chunk
+    return hash_algo.hexdigest()
 
-    if not os.path.exists(file_path):
-        logging.error(f"File not found: {file_path}")
-        return {}
-
+async def send_file(file_path, peers):
+    """Send a file to specified peers concurrently."""
+    transfer_id = str(uuid.uuid4())
     file_size = os.path.getsize(file_path)
     file_name = os.path.basename(file_path)
-    file_hash = FileTransferManager.calculate_file_hash(file_path)
-    if not file_hash:
-        logging.error("Failed to calculate file hash")
-        return {}
 
-    transfer_results = {}
-    for peer_ip, websocket in list(connections.items()):
-        transfer = FileTransfer(file_path, peer_ip, direction="send")
-        active_transfers[transfer.transfer_id] = transfer
-        transfer.state = TransferState.IN_PROGRESS
+    # Compute hash in chunks
+    file_hash = await compute_hash(file_path)
 
+    # Initialize transfer object
+    transfer = FileTransfer(file_path, list(peers.keys())[0], direction="send")
+    transfer.transfer_id = transfer_id
+    transfer.total_size = file_size
+    transfer.expected_hash = file_hash
+    active_transfers[transfer_id] = transfer
+
+    # Send initialization message
+    init_message = json.dumps({
+        "type": "file_transfer_init",
+        "transfer_id": transfer_id,
+        "filename": file_name,
+        "filesize": file_size,
+        "file_hash": file_hash
+    })
+
+    for peer_ip, websocket in peers.items():
         try:
-            print(f"\nSending '{file_name}' ({file_size} bytes) to {peer_ip}")
-            await websocket.send(
-                json.dumps(
-                    {
-                        "type": "file_transfer_init",
-                        "transfer_id": transfer.transfer_id,
-                        "filename": file_name,
-                        "filesize": file_size,
-                        "file_hash": file_hash,
-                    }
-                )
-            )
-            await asyncio.sleep(0.5)
-
-            async with aiofiles.open(file_path, "rb") as file:
-                bytes_sent = 0
-                while bytes_sent < file_size:
-                    async with transfer.condition:
-                        while transfer.paused:
-                            await transfer.condition.wait()
-                    chunk = await file.read(transfer.chunk_size)
-                    if not chunk:
-                        break
-                    await websocket.send(
-                        json.dumps(
-                            {
-                                "type": "file_chunk",
-                                "transfer_id": transfer.transfer_id,
-                                "chunk": chunk.hex(),
-                                "offset": bytes_sent,
-                            }
-                        )
-                    )
-                    bytes_sent += len(chunk)
-                    transfer.transferred_size = bytes_sent
-                    if bytes_sent % (64 * 1024 * 16) == 0:
-                        await asyncio.sleep(0.01)
-
-            print(f"✅ Successfully sent '{file_name}' to {peer_ip}")
-            transfer.state = TransferState.COMPLETED
-            transfer_results[peer_ip] = {"status": "success", "transfer_id": transfer.transfer_id}
-
+            await websocket.send(init_message)
         except Exception as e:
-            logging.exception(f"Error sending to {peer_ip}: {e}")
-            transfer_results[peer_ip] = {"status": "failed", "transfer_id": transfer.transfer_id, "error": str(e)}
-            transfer.state = TransferState.FAILED
+            logging.error(f"Failed to send file init to {peer_ip}: {e}")
+            del active_transfers[transfer_id]
+            return
 
-    return transfer_results
+    # Send file chunks
+    async with aiofiles.open(file_path, "rb") as f:
+        transfer.file_handle = f
+        chunk_size = 1024 * 1024  # 1MB chunks
+        while not shutdown_event.is_set():
+            async with transfer.condition:
+                while transfer.state == TransferState.PAUSED and not shutdown_event.is_set():
+                    await transfer.condition.wait()
+                if shutdown_event.is_set():
+                    break
+                chunk = await f.read(chunk_size)
+                if not chunk:
+                    transfer.state = TransferState.COMPLETED
+                    break
+                transfer.transferred_size += len(chunk)
+                for peer_ip, websocket in list(peers.items()):
+                    try:
+                        await websocket.send(json.dumps({
+                            "type": "file_chunk",
+                            "transfer_id": transfer_id,
+                            "chunk": chunk.hex()
+                        }))
+                    except Exception as e:
+                        logging.error(f"Error sending chunk to {peer_ip}: {e}")
+                        del peers[peer_ip]
+                if not peers:
+                    transfer.state = TransferState.FAILED
+                    break
+        if transfer.file_handle:
+            await transfer.file_handle.close()
+            transfer.file_handle = None
+    if transfer.state == TransferState.COMPLETED:
+        logging.info(f"File transfer {transfer_id} completed.")
 
 async def update_transfer_progress():
-    while True:
-        if active_transfers:
-            print("\nActive Transfers:")
-            for transfer_id, transfer in active_transfers.items():
-                if isinstance(transfer, FileTransfer):
-                    percentage = (
-                        (transfer.transferred_size / transfer.total_size * 100)
-                        if transfer.total_size > 0
-                        else 0
-                    )
-                    print(
-                        f"- ID: {transfer_id} | State: {transfer.state} | "
-                        f"Progress: {transfer.transferred_size}/{transfer.total_size} bytes "
-                        f"({percentage:.2f}%) | Peer: {transfer.peer_ip}"
-                    )
-        await asyncio.sleep(5)
+    """Update the progress of active file transfers."""
+    while not shutdown_event.is_set():
+        try:
+            for transfer_id, transfer in list(active_transfers.items()):
+                if transfer.state in (TransferState.COMPLETED, TransferState.FAILED):
+                    if transfer.file_handle:
+                        await transfer.file_handle.close()
+                    del active_transfers[transfer_id]
+                elif transfer.total_size > 0:
+                    progress = (transfer.transferred_size / transfer.total_size) * 100
+                    logging.debug(f"Transfer {transfer_id}: {progress:.2f}%")
+            await asyncio.sleep(1)
+        except Exception as e:
+            logging.exception(f"Error in update_transfer_progress: {e}")
+            await asyncio.sleep(1)

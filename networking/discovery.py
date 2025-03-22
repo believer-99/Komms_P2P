@@ -1,100 +1,99 @@
 import asyncio
 import socket
-import struct
-import time
+import json
 import logging
-
-MULTICAST_GROUP = "224.0.0.1"
-DISCOVERY_PORT = 50001
-DISCOVERY_MESSAGE = "PEER_DISCOVERY"
+import netifaces
+from networking.utils import get_own_ip
+from networking.shared_state import user_data, shutdown_event
 
 class PeerDiscovery:
-    def __init__(self):
-        self.peer_list = []
-        self.last_seen = {}
-        self._lock = asyncio.Lock()
-        self.own_ip = self.get_own_ip()  # Get own IP at initialization
-
-    def get_own_ip(self):
-        """Determine the peer's own IP address by connecting to an external server."""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
-        except Exception as e:
-            logging.error(f"Error getting own IP: {e}")
-            return "127.0.0.1"  # Fallback to localhost if it fails
+    def __init__(self, broadcast_interval=5, cleanup_interval=60):
+        self.broadcast_port = 37020
+        self.peer_list = {}  # {ip: (username, last_seen)}
+        self.broadcast_interval = broadcast_interval
+        self.cleanup_interval = cleanup_interval
+        self.running = True
 
     async def send_broadcasts(self):
-        """Send periodic multicast discovery messages with the peer's own IP."""
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-        sock.setblocking(False)
-        loop = asyncio.get_event_loop()
-
+        """Send periodic UDP broadcasts to announce presence."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            discovery_message = f"{DISCOVERY_MESSAGE} {self.own_ip}"
-            logging.info("Starting discovery broadcasts...")
-            while True:
-                await loop.sock_sendto(sock, discovery_message.encode(), (MULTICAST_GROUP, DISCOVERY_PORT))
-                logging.debug("Broadcasted Discovery Message")
-                await asyncio.sleep(5)  # Send every 5 seconds
+            while self.running and not shutdown_event.is_set():
+                own_ip = await get_own_ip()
+                username = user_data.get("original_username", "unknown")
+                message = json.dumps({"ip": own_ip, "username": username}).encode()
+                for interface in netifaces.interfaces():
+                    try:
+                        if netifaces.AF_INET in netifaces.ifaddresses(interface):
+                            broadcast_addr = netifaces.ifaddresses(interface)[netifaces.AF_INET][0]["broadcast"]
+                            sock.sendto(message, (broadcast_addr, self.broadcast_port))
+                    except Exception as e:
+                        logging.debug(f"Error broadcasting on {interface}: {e}")
+                await asyncio.sleep(self.broadcast_interval)
         finally:
             sock.close()
+        logging.info("send_broadcasts stopped.")
 
     async def receive_broadcasts(self):
-        """Receive multicast discovery messages and update peer list, ignoring self-messages."""
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        """Receive UDP broadcasts from peers."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(('', DISCOVERY_PORT))
-        mreq = struct.pack("4sl", socket.inet_aton(MULTICAST_GROUP), socket.INADDR_ANY)
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        sock.bind(("", self.broadcast_port))
         sock.setblocking(False)
         loop = asyncio.get_event_loop()
-
+        own_ip = await get_own_ip()
         try:
-            while True:
-                data, addr = await loop.sock_recvfrom(sock, 1024)
-                message = data.decode()
-                if message.startswith(DISCOVERY_MESSAGE):
-                    parts = message.split(" ", 1)
-                    if len(parts) == 2:
-                        sender_ip = parts[1]
-                        if sender_ip != self.own_ip:  # Ignore self-messages
-                            async with self._lock:
-                                self.last_seen[sender_ip] = time.time()
-                                if sender_ip not in self.peer_list:
-                                    logging.info(f"Found peer at {sender_ip}")
-                                    self.peer_list.append(sender_ip)
+            while self.running and not shutdown_event.is_set():
+                try:
+                    data, (sender_ip, _) = await loop.sock_recvfrom(sock, 1024)
+                    if sender_ip == own_ip:
+                        continue
+                    message = json.loads(data.decode())
+                    peer_ip = message["ip"]
+                    username = message["username"]
+                    self.peer_list[peer_ip] = (username, asyncio.get_event_loop().time())
+                except json.JSONDecodeError:
+                    logging.warning(f"Invalid broadcast received from {sender_ip}")
+                except Exception as e:
+                    logging.error(f"Error receiving broadcast: {e}")
+                await asyncio.sleep(0.1)
+        finally:
+            sock.close()
+        logging.info("receive_broadcasts stopped.")
+
+    async def cleanup_stale_peers(self):
+        """Remove peers not seen recently."""
+        while self.running and not shutdown_event.is_set():
+            current_time = asyncio.get_event_loop().time()
+            for peer_ip in list(self.peer_list.keys()):
+                _, last_seen = self.peer_list[peer_ip]
+                if current_time - last_seen > self.cleanup_interval:
+                    del self.peer_list[peer_ip]
+                    logging.info(f"Removed stale peer: {peer_ip}")
+            await asyncio.sleep(self.cleanup_interval)
+        logging.info("cleanup_stale_peers stopped.")
+
+    async def send_immediate_broadcast(self):
+        """Send an immediate broadcast to announce a username change."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            own_ip = await get_own_ip()
+            username = user_data.get("original_username", "unknown")
+            message = json.dumps({"ip": own_ip, "username": username}).encode()
+            for interface in netifaces.interfaces():
+                try:
+                    if netifaces.AF_INET in netifaces.ifaddresses(interface):
+                        broadcast_addr = netifaces.ifaddresses(interface)[netifaces.AF_INET][0]["broadcast"]
+                        sock.sendto(message, (broadcast_addr, self.broadcast_port))
+                except Exception as e:
+                    logging.debug(f"Error broadcasting on {interface}: {e}")
         finally:
             sock.close()
 
-    async def cleanup_stale_peers(self):
-        """Periodically remove peers that haven't been seen for over 30 seconds."""
-        while True:
-            async with self._lock:
-                now = time.time()
-                stale = [ip for ip, ts in self.last_seen.items() if now - ts > 30]
-                for ip in stale:
-                    if ip in self.peer_list:
-                        logging.info(f"Removing stale peer: {ip}")
-                        self.peer_list.remove(ip)
-                    if ip in self.last_seen:
-                        del self.last_seen[ip]
-            await asyncio.sleep(10)  # Check every 10 seconds
-
-    async def start(self):
-        """Start the peer discovery process, including sending, receiving, and cleaning up peers."""
-        await asyncio.gather(
-            self.send_broadcasts(),
-            self.receive_broadcasts(),
-            self.cleanup_stale_peers()
-        )
-
-# Example usage (if run standalone)
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    discovery = PeerDiscovery()
-    asyncio.run(discovery.start())
+    def stop(self):
+        """Stop the discovery process."""
+        self.running = False
