@@ -11,12 +11,13 @@ from aioconsole import ainput
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from networking.discovery import PeerDiscovery
-from networking.utils import get_own_ip  # Import from utils
+from networking.utils import get_own_ip
 from networking.shared_state import active_transfers, message_queue, connections, user_data, peer_public_keys, peer_usernames
 from networking.file_transfer import send_file, FileTransfer, TransferState, FileTransferManager
 from websockets.connection import State
 
 peer_list = {}  # {ip: (username, last_seen)}
+connection_denials = {}  # {target_username: {requesting_username: denial_count}}
 
 def get_mac_address():
     """Get the MAC address of the primary network interface."""
@@ -77,7 +78,7 @@ async def create_new_user_config(config_file, mac):
             ).decode(),
         }, f)
 
-async def connect_to_peer(peer_ip, port=8765):
+async def connect_to_peer(peer_ip, requesting_username, target_username, port=8765):
     if peer_ip in connections:
         return None
     uri = f"ws://{peer_ip}:{port}"
@@ -96,20 +97,32 @@ async def connect_to_peer(peer_ip, port=8765):
                 format=serialization.PublicFormat.SubjectPublicKeyInfo
             ).decode()
             await websocket.send(json.dumps({
-                "type": "IDENTITY",
-                "username": user_data["original_username"],
-                "device_id": user_data["device_id"],
+                "type": "CONNECTION_REQUEST",
+                "requesting_username": requesting_username,
+                "target_username": target_username,
                 "key": public_key_pem
             }))
-            identity_message = await websocket.recv()
-            identity_data = json.loads(identity_message)
-            if identity_data["type"] == "IDENTITY":
-                peer_username = identity_data["username"]
-                peer_public_keys[peer_ip] = serialization.load_pem_public_key(identity_data["key"].encode())
-                peer_usernames[peer_username] = peer_ip
-            connections[peer_ip] = websocket
-            logging.info(f"{user_data['original_username']} connected to {peer_username} ({peer_ip})")
-            return websocket
+            approval_response = await websocket.recv()
+            approval_data = json.loads(approval_response)
+            if approval_data["type"] == "CONNECTION_RESPONSE" and approval_data["approved"]:
+                await websocket.send(json.dumps({
+                    "type": "IDENTITY",
+                    "username": requesting_username,
+                    "device_id": user_data["device_id"],
+                    "key": public_key_pem
+                }))
+                identity_message = await websocket.recv()
+                identity_data = json.loads(identity_message)
+                if identity_data["type"] == "IDENTITY":
+                    peer_username = identity_data["username"]
+                    peer_public_keys[peer_ip] = serialization.load_pem_public_key(identity_data["key"].encode())
+                    peer_usernames[peer_username] = peer_ip
+                connections[peer_ip] = websocket
+                logging.info(f"{requesting_username} connected to {peer_username} ({peer_ip})")
+                return websocket
+            else:
+                await websocket.close()
+                return None
         else:
             await websocket.close()
             return None
@@ -125,25 +138,56 @@ async def handle_incoming_connection(websocket, peer_ip):
             own_ip = await get_own_ip()
             if peer_ip not in connections:
                 await websocket.send("INIT_ACK")
-                public_key_pem = user_data["public_key"].public_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PublicFormat.SubjectPublicKeyInfo
-                ).decode()
-                await websocket.send(json.dumps({
-                    "type": "IDENTITY",
-                    "username": user_data["original_username"],
-                    "device_id": user_data["device_id"],
-                    "key": public_key_pem
-                }))
-                identity_message = await websocket.recv()
-                identity_data = json.loads(identity_message)
-                if identity_data["type"] == "IDENTITY":
-                    peer_username = identity_data["username"]
-                    peer_public_keys[peer_ip] = serialization.load_pem_public_key(identity_data["key"].encode())
-                    peer_usernames[peer_username] = peer_ip
-                connections[peer_ip] = websocket
-                logging.info(f"{user_data['original_username']} accepted connection from {peer_username} ({peer_ip})")
-                return True
+                request_message = await websocket.recv()
+                request_data = json.loads(request_message)
+                if request_data["type"] == "CONNECTION_REQUEST":
+                    requesting_username = request_data["requesting_username"]
+                    target_username = request_data["target_username"]
+                    if target_username != user_data["original_username"]:
+                        await websocket.send(json.dumps({
+                            "type": "CONNECTION_RESPONSE",
+                            "approved": False
+                        }))
+                        await websocket.close()
+                        return False
+                    await message_queue.put(f"Connection request from {requesting_username}. Approve? (yes/no)")
+                    response = await ainput(f"{user_data['original_username']} > ")
+                    approved = response.lower() == "yes"
+                    # Track denials
+                    if not approved:
+                        if target_username not in connection_denials:
+                            connection_denials[target_username] = {}
+                        denial_count = connection_denials[target_username].get(requesting_username, 0) + 1
+                        connection_denials[target_username][requesting_username] = denial_count
+                        await message_queue.put(f"Denied connection from {requesting_username} ({denial_count}/3)")
+                        if denial_count >= 3:
+                            await message_queue.put(f"{requesting_username} has been blocked for this session.")
+                    await websocket.send(json.dumps({
+                        "type": "CONNECTION_RESPONSE",
+                        "approved": approved
+                    }))
+                    if not approved:
+                        await websocket.close()
+                        return False
+                    public_key_pem = user_data["public_key"].public_bytes(
+                        encoding=serialization.Encoding.PEM,
+                        format=serialization.PublicFormat.SubjectPublicKeyInfo
+                    ).decode()
+                    await websocket.send(json.dumps({
+                        "type": "IDENTITY",
+                        "username": user_data["original_username"],
+                        "device_id": user_data["device_id"],
+                        "key": public_key_pem
+                    }))
+                    identity_message = await websocket.recv()
+                    identity_data = json.loads(identity_message)
+                    if identity_data["type"] == "IDENTITY":
+                        peer_username = identity_data["username"]
+                        peer_public_keys[peer_ip] = serialization.load_pem_public_key(identity_data["key"].encode())
+                        peer_usernames[peer_username] = peer_ip
+                    connections[peer_ip] = websocket
+                    logging.info(f"{user_data['original_username']} accepted connection from {peer_username} ({peer_ip})")
+                    return True
             else:
                 await websocket.close()
                 return False
@@ -372,19 +416,27 @@ async def user_input():
                 if target_username in peer_usernames:
                     print(f"Already connected to {target_username}")
                     continue
+                # Check denial count
+                requesting_username = user_data["original_username"]
+                if target_username in connection_denials and requesting_username in connection_denials[target_username]:
+                    denial_count = connection_denials[target_username][requesting_username]
+                    if denial_count >= 3:
+                        print(f"You have been blocked by {target_username} for this session.")
+                        continue
                 peer_ip = None
                 for ip, (username, _) in peer_list.items():
                     if username == target_username:
                         peer_ip = ip
                         break
                 if peer_ip:
-                    websocket = await connect_to_peer(peer_ip)
+                    print(f"Requesting connection to {target_username}...")
+                    websocket = await connect_to_peer(peer_ip, requesting_username, target_username)
                     if websocket:
                         connections[peer_ip] = websocket
                         asyncio.create_task(receive_peer_messages(websocket, peer_ip))
-                        print(f"{user_data['original_username']} connected to {target_username}")
+                        print(f"{requesting_username} connected to {target_username}")
                     else:
-                        print(f"Failed to connect to {target_username}")
+                        print(f"Connection to {target_username} was denied or failed.")
                 else:
                     print(f"No such peer exists: {target_username}")
                 continue
