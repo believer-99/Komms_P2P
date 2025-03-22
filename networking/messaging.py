@@ -12,9 +12,12 @@ from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from networking.discovery import PeerDiscovery
 from networking.utils import get_own_ip
-from networking.shared_state import active_transfers, message_queue, connections, user_data, peer_public_keys, peer_usernames
+from networking.shared_state import (
+    active_transfers, message_queue, connections, user_data, peer_public_keys, peer_usernames, shutdown_event
+)
 from networking.file_transfer import send_file, FileTransfer, TransferState, FileTransferManager
 from websockets.connection import State
+from websockets.exceptions import ConnectionClosedOK
 
 peer_list = {}  # {ip: (username, last_seen)}
 connection_denials = {}  # {target_username: {requesting_username: denial_count}}
@@ -82,6 +85,7 @@ async def connect_to_peer(peer_ip, requesting_username, target_username, port=87
     if peer_ip in connections:
         return None
     uri = f"ws://{peer_ip}:{port}"
+    websocket = None
     try:
         websocket = await websockets.connect(
             uri,
@@ -102,37 +106,49 @@ async def connect_to_peer(peer_ip, requesting_username, target_username, port=87
                 "target_username": target_username,
                 "key": public_key_pem
             }))
-            approval_response = await websocket.recv()
-            approval_data = json.loads(approval_response)
-            if approval_data["type"] == "CONNECTION_RESPONSE" and approval_data["approved"]:
-                await websocket.send(json.dumps({
-                    "type": "IDENTITY",
-                    "username": requesting_username,
-                    "device_id": user_data["device_id"],
-                    "key": public_key_pem
-                }))
-                identity_message = await websocket.recv()
-                identity_data = json.loads(identity_message)
-                if identity_data["type"] == "IDENTITY":
-                    peer_username = identity_data["username"]
-                    peer_public_keys[peer_ip] = serialization.load_pem_public_key(identity_data["key"].encode())
-                    peer_usernames[peer_username] = peer_ip
-                connections[peer_ip] = websocket
-                logging.info(f"{requesting_username} connected to {peer_username} ({peer_ip})")
-                return websocket
-            else:
-                await websocket.close()
+            try:
+                approval_response = await websocket.recv()
+                approval_data = json.loads(approval_response)
+                if approval_data["type"] == "CONNECTION_RESPONSE" and approval_data["approved"]:
+                    await websocket.send(json.dumps({
+                        "type": "IDENTITY",
+                        "username": requesting_username,
+                        "device_id": user_data["device_id"],
+                        "key": public_key_pem
+                    }))
+                    identity_message = await websocket.recv()
+                    identity_data = json.loads(identity_message)
+                    if identity_data["type"] == "IDENTITY":
+                        peer_username = identity_data["username"]
+                        peer_public_keys[peer_ip] = serialization.load_pem_public_key(identity_data["key"].encode())
+                        peer_usernames[peer_username] = peer_ip
+                        connections[peer_ip] = websocket
+                        logging.info(f"{requesting_username} connected to {peer_username} ({peer_ip})")
+                        return websocket
+                    else:
+                        await websocket.close()
+                        return None
+                else:
+                    await websocket.close()
+                    return None
+            except ConnectionClosedOK:
+                logging.info(f"Connection to {peer_ip} closed by peer during approval.")
                 return None
         else:
             await websocket.close()
             return None
     except Exception as e:
         logging.exception(f"Failed to connect to {peer_ip}: {e}")
+        if websocket:
+            await websocket.close()
         return None
 
 async def handle_incoming_connection(websocket, peer_ip):
     try:
         message = await websocket.recv()
+        if shutdown_event.is_set():
+            await websocket.close()
+            return False
         if message.startswith("INIT "):
             _, sender_ip = message.split(" ", 1)
             own_ip = await get_own_ip()
@@ -153,7 +169,6 @@ async def handle_incoming_connection(websocket, peer_ip):
                     await message_queue.put(f"Connection request from {requesting_username}. Approve? (yes/no)")
                     response = await ainput(f"{user_data['original_username']} > ")
                     approved = response.lower() == "yes"
-                    # Track denials
                     if not approved:
                         if target_username not in connection_denials:
                             connection_denials[target_username] = {}
@@ -185,21 +200,28 @@ async def handle_incoming_connection(websocket, peer_ip):
                         peer_username = identity_data["username"]
                         peer_public_keys[peer_ip] = serialization.load_pem_public_key(identity_data["key"].encode())
                         peer_usernames[peer_username] = peer_ip
-                    connections[peer_ip] = websocket
-                    logging.info(f"{user_data['original_username']} accepted connection from {peer_username} ({peer_ip})")
-                    return True
+                        connections[peer_ip] = websocket
+                        logging.info(f"{user_data['original_username']} accepted connection from {peer_username} ({peer_ip})")
+                        return True
+                    else:
+                        await websocket.close()
+                        return False
             else:
                 await websocket.close()
                 return False
     except Exception as e:
         logging.exception(f"Error in connection handshake: {e}")
+        if websocket and websocket.state == State.OPEN:
+            await websocket.close()
         return False
 
 async def maintain_peer_list(discovery_instance):
     global peer_list
-    while True:
+    while not shutdown_event.is_set():
         try:
             for peer_ip in list(connections.keys()):
+                if shutdown_event.is_set():
+                    break
                 try:
                     await connections[peer_ip].ping()
                 except websockets.exceptions.ConnectionClosed:
@@ -220,6 +242,7 @@ async def maintain_peer_list(discovery_instance):
         except Exception as e:
             logging.exception(f"Error in maintain_peer_list: {e}")
             await asyncio.sleep(5)
+    logging.info("maintain_peer_list exited due to shutdown.")
 
 async def send_message_to_peers(message, target_username=None):
     if target_username:
@@ -282,6 +305,8 @@ async def send_message_to_peers(message, target_username=None):
 async def receive_peer_messages(websocket, peer_ip):
     try:
         async for message in websocket:
+            if shutdown_event.is_set():
+                break
             try:
                 data = json.loads(message)
                 message_type = data.get("type")
@@ -313,8 +338,12 @@ async def receive_peer_messages(websocket, peer_ip):
                     transfer = active_transfers.get(transfer_id)
                     if transfer and transfer.direction == "receive":
                         async with transfer.condition:
-                            while transfer.paused:
+                            while transfer.state == TransferState.PAUSED and not shutdown_event.is_set():
                                 await transfer.condition.wait()
+                            if shutdown_event.is_set():
+                                await transfer.file_handle.close()
+                                del active_transfers[transfer_id]
+                                break
                         chunk = bytes.fromhex(data["chunk"])
                         await transfer.file_handle.write(chunk)
                         transfer.transferred_size += len(chunk)
@@ -374,10 +403,11 @@ async def receive_peer_messages(websocket, peer_ip):
                 if ip == peer_ip:
                     del peer_usernames[username]
             await message_queue.put(f"{user_data['original_username']} disconnected from {peer_username}")
+        logging.info(f"receive_peer_messages for {peer_ip} exited.")
 
 async def user_input():
     await asyncio.sleep(1)
-    while True:
+    while not shutdown_event.is_set():
         try:
             message = await ainput(f"{user_data['original_username']} > ")
 
@@ -393,7 +423,8 @@ async def user_input():
                 /resume <transfer_id>  - Resume a file transfer
                 /transfers             - List active transfers
                 /list                  - Show available peers
-                /changeName            - Change your username
+                /changename            - Change your username
+                /exit                  - Exit the application
                 /help                  - Show this help
                 """
                 )
@@ -401,12 +432,21 @@ async def user_input():
 
             if message == "/list":
                 print("\nAvailable peers:")
+                own_ip = await get_own_ip()
                 for ip, (username, _) in peer_list.items():
-                    status = "Connected" if ip in connections else "Discovered"
-                    print(f"- {username} ({ip}, {status})")
+                    if ip == own_ip:
+                        print(f"- {username} ({ip}, Self)")
+                    else:
+                        status = "Connected" if ip in connections else "Discovered"
+                        print(f"- {username} ({ip}, {status})")
                 if not peer_list:
                     print("No peers available")
                 continue
+
+            if message == "/exit":
+                print("Shutting down application...")
+                shutdown_event.set()
+                raise asyncio.CancelledError
 
             if message.startswith("/connect "):
                 target_username = message[9:].strip()
@@ -416,7 +456,6 @@ async def user_input():
                 if target_username in peer_usernames:
                     print(f"Already connected to {target_username}")
                     continue
-                # Check denial count
                 requesting_username = user_data["original_username"]
                 if target_username in connection_denials and requesting_username in connection_denials[target_username]:
                     denial_count = connection_denials[target_username][requesting_username]
@@ -535,7 +574,7 @@ async def user_input():
                             print(f"- ID: {transfer_id} | Status: {transfer.get('status', 'unknown')}")
                 continue
 
-            if message == "/changeName":
+            if message == "/changename":
                 mac = get_mac_address()
                 config_file = f"user_config_{mac}.json"
                 if os.path.exists(config_file):
@@ -551,16 +590,22 @@ async def user_input():
                 else:
                     print("No peers connected. Use /connect <username> to connect.")
 
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             logging.exception(f"Error in user_input: {e}")
             await asyncio.sleep(1)
+    logging.info("user_input exited due to shutdown.")
 
 async def display_messages():
-    while True:
+    while not shutdown_event.is_set():
         try:
             message = await message_queue.get()
             print(f"\n{message}")
             print(f"{user_data['original_username']} > ", end="", flush=True)
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             logging.exception(f"Error displaying message: {e}")
             await asyncio.sleep(1)
+    logging.info("display_messages exited due to shutdown.")

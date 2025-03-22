@@ -13,7 +13,7 @@ from networking.messaging import (
     initialize_user_config,
 )
 from networking.file_transfer import send_file, update_transfer_progress
-from networking.shared_state import peer_usernames, peer_public_keys
+from networking.shared_state import peer_usernames, peer_public_keys, shutdown_event
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,6 +41,9 @@ async def main():
     discovery_task = asyncio.create_task(discovery.receive_broadcasts())
     cleanup_task = asyncio.create_task(discovery.cleanup_stale_peers())
     progress_task = asyncio.create_task(update_transfer_progress())
+    maintain_task = asyncio.create_task(maintain_peer_list(discovery))
+    input_task = asyncio.create_task(user_input())
+    display_task = asyncio.create_task(display_messages())
 
     server = await websockets.serve(
         handle_peer_connection,
@@ -51,36 +54,71 @@ async def main():
     )
     logging.info("WebSocket server started")
 
+    tasks = [
+        broadcast_task,
+        discovery_task,
+        cleanup_task,
+        progress_task,
+        maintain_task,
+        input_task,
+        display_task,
+    ]
+
     try:
-        await asyncio.gather(
-            user_input(),
-            display_messages(),
-            broadcast_task,
-            discovery_task,
-            cleanup_task,
-            progress_task,
-            maintain_peer_list(discovery),
-        )
+        await asyncio.gather(*tasks)
     except KeyboardInterrupt:
         logging.info("Keyboard interrupt received. Shutting down...")
+        shutdown_event.set()
+    except asyncio.CancelledError:
+        logging.info("Shutdown triggered via /exit. Closing down...")
     finally:
+        logging.info("Initiating shutdown process...")
+
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+                logging.info(f"Canceled task: {task.get_name()}")
+
+        try:
+            await asyncio.wait(tasks, timeout=2.0)
+        except asyncio.CancelledError:
+            pass
+
+        logging.info("Closing WebSocket server...")
         server.close()
         await server.wait_closed()
-        for websocket in list(connections.values()):
+        logging.info("WebSocket server closed.")
+
+        for peer_ip, websocket in list(connections.items()):
             try:
-                await websocket.close()
+                if websocket.open:
+                    await websocket.close()
+                    logging.info(f"Closed connection to {peer_ip}")
             except Exception as e:
-                logging.error(f"Error closing connection: {e}")
-        # Clear temporary mappings
+                logging.error(f"Error closing connection to {peer_ip}: {e}")
         connections.clear()
         peer_public_keys.clear()
         peer_usernames.clear()
+
+        logging.info("Stopping discovery...")
+        discovery.stop()
+
+        from networking.file_transfer import active_transfers
+        for transfer_id, transfer in list(active_transfers.items()):
+            if transfer.file_handle:
+                await transfer.file_handle.close()
+                logging.info(f"Closed file handle for transfer {transfer_id}")
+            del active_transfers[transfer_id]
+
+        logging.info("Application fully shut down.")
+        loop = asyncio.get_event_loop()
+        loop.stop()
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nShutting down...")
+        print("\nShutting down via interrupt...")
     except Exception as e:
         print(f"Unexpected error: {e}")
         sys.exit(1)
