@@ -21,6 +21,7 @@ from websockets.exceptions import ConnectionClosedOK
 
 peer_list = {}  # {ip: (username, last_seen)}
 connection_denials = {}  # {target_username: {requesting_username: denial_count}}
+pending_approvals = {}  # {peer_ip: asyncio.Future} for connection approvals
 
 def get_mac_address():
     """Get the MAC address of the primary network interface."""
@@ -166,9 +167,29 @@ async def handle_incoming_connection(websocket, peer_ip):
                         }))
                         await websocket.close()
                         return False
-                    await message_queue.put(f"Connection request from {requesting_username}. Approve? (yes/no)")
-                    response = await ainput(f"{user_data['original_username']} > ")
-                    approved = response.lower() == "yes"
+
+                    # Queue the approval request and wait for response
+                    approval_future = asyncio.Future()
+                    pending_approvals[peer_ip] = approval_future
+                    await message_queue.put({
+                        "type": "approval_request",
+                        "peer_ip": peer_ip,
+                        "requesting_username": requesting_username
+                    })
+
+                    try:
+                        approved = await asyncio.wait_for(approval_future, timeout=30.0)  # 30s timeout
+                    except asyncio.TimeoutError:
+                        logging.info(f"Approval for {requesting_username} ({peer_ip}) timed out.")
+                        del pending_approvals[peer_ip]
+                        await websocket.send(json.dumps({
+                            "type": "CONNECTION_RESPONSE",
+                            "approved": False
+                        }))
+                        await websocket.close()
+                        return False
+
+                    del pending_approvals[peer_ip]
                     if not approved:
                         if target_username not in connection_denials:
                             connection_denials[target_username] = {}
@@ -184,6 +205,7 @@ async def handle_incoming_connection(websocket, peer_ip):
                     if not approved:
                         await websocket.close()
                         return False
+
                     public_key_pem = user_data["public_key"].public_bytes(
                         encoding=serialization.Encoding.PEM,
                         format=serialization.PublicFormat.SubjectPublicKeyInfo
@@ -583,6 +605,14 @@ async def user_input():
                 print(f"Username changed to {user_data['original_username']}")
                 continue
 
+            # Handle approval responses
+            if message.lower() in ("yes", "no") and pending_approvals:
+                # Assume the first pending approval (single-user scenario for simplicity)
+                peer_ip, future = next(iter(pending_approvals.items()))
+                if not future.done():
+                    future.set_result(message.lower() == "yes")
+                continue
+
             if not message.startswith("/"):
                 if connections:
                     await send_message_to_peers(message)
@@ -600,8 +630,13 @@ async def user_input():
 async def display_messages():
     while not shutdown_event.is_set():
         try:
-            message = await message_queue.get()
-            print(f"\n{message}")
+            item = await message_queue.get()
+            if isinstance(item, dict) and item.get("type") == "approval_request":
+                peer_ip = item["peer_ip"]
+                requesting_username = item["requesting_username"]
+                print(f"\nConnection request from {requesting_username} ({peer_ip}). Approve? (yes/no)")
+            else:
+                print(f"\n{item}")
             print(f"{user_data['original_username']} > ", end="", flush=True)
         except asyncio.CancelledError:
             break
