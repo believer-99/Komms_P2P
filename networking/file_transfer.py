@@ -43,24 +43,34 @@ class FileTransfer:
                 self.condition.notify_all()
                 logging.info(f"Transfer {self.transfer_id} resumed.")
 
+async def compute_hash(file_path):
+    """Compute the SHA-256 hash of a file in chunks asynchronously."""
+    hash_algo = hashlib.sha256()
+    async with aiofiles.open(file_path, "rb") as f:
+        while True:
+            chunk = await f.read(1024 * 1024)  # Read 1MB chunks
+            if not chunk:
+                break
+            hash_algo.update(chunk)  # Update hash with each chunk
+    return hash_algo.hexdigest()
+
 async def send_file(file_path, peers):
-    """Send a file to specified peers."""
+    """Send a file to specified peers concurrently."""
     transfer_id = str(uuid.uuid4())
     file_size = os.path.getsize(file_path)
     file_name = os.path.basename(file_path)
-    hash_algo = hashlib.sha256()
 
-    async with aiofiles.open(file_path, "rb") as f:
-        file_data = await f.read()
-        hash_algo.update(file_data)
-        file_hash = hash_algo.hexdigest()
+    # Compute hash in chunks
+    file_hash = await compute_hash(file_path)
 
+    # Initialize transfer object
     transfer = FileTransfer(file_path, list(peers.keys())[0], direction="send")
     transfer.transfer_id = transfer_id
     transfer.total_size = file_size
     transfer.expected_hash = file_hash
     active_transfers[transfer_id] = transfer
 
+    # Send initialization message
     init_message = json.dumps({
         "type": "file_transfer_init",
         "transfer_id": transfer_id,
@@ -77,6 +87,7 @@ async def send_file(file_path, peers):
             del active_transfers[transfer_id]
             return
 
+    # Send file chunks
     async with aiofiles.open(file_path, "rb") as f:
         transfer.file_handle = f
         chunk_size = 1024 * 1024  # 1MB chunks
