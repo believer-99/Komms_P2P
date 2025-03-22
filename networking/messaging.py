@@ -18,42 +18,66 @@ from websockets.connection import State
 
 peer_list = []
 
+def get_mac_address():
+    """Get the MAC address of the primary network interface."""
+    try:
+        for interface in netifaces.interfaces():
+            addrs = netifaces.ifaddresses(interface)
+            if netifaces.AF_LINK in addrs:
+                mac = addrs[netifaces.AF_LINK][0]["addr"]
+                if mac and mac != "00:00:00:00:00:00":
+                    return mac.replace(":", "").lower()
+        return str(uuid.uuid4()).replace("-", "")  # Fallback to UUID if no MAC found
+    except Exception as e:
+        logging.error(f"Failed to get MAC address: {e}")
+        return str(uuid.uuid4()).replace("-", "")
+
 async def initialize_user_config():
-    config_file = "user_config.json"
+    mac = get_mac_address()
+    config_file = f"user_config_{mac}.json"
     if os.path.exists(config_file):
         with open(config_file, "r") as f:
-            user_data.update(json.load(f))
-        user_data["public_key"] = serialization.load_pem_public_key(user_data["public_key"].encode())
-        user_data["private_key"] = serialization.load_pem_private_key(user_data["private_key"].encode(), password=None)
+            loaded_data = json.load(f)
+        # Verify device_id matches current device
+        if loaded_data.get("device_id") == mac:
+            user_data.update(loaded_data)
+            user_data["public_key"] = serialization.load_pem_public_key(user_data["public_key"].encode())
+            user_data["private_key"] = serialization.load_pem_private_key(user_data["private_key"].encode(), password=None)
+        else:
+            # Device ID mismatch, prompt for new username
+            await create_new_user_config(config_file, mac)
     else:
-        original_username = await ainput("Enter your username: ")
-        internal_username = f"{original_username}_{uuid.uuid4()}"
-        device_id = str(uuid.uuid4())
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        public_key = private_key.public_key()
-        user_data.update({
+        await create_new_user_config(config_file, mac)
+    print(f"Welcome, {user_data['original_username']} (Device ID: {user_data['device_id']})")
+
+async def create_new_user_config(config_file, mac):
+    original_username = await ainput("Enter your username: ")
+    internal_username = f"{original_username}_{uuid.uuid4()}"
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+    user_data.clear()  # Clear existing data
+    user_data.update({
+        "original_username": original_username,
+        "internal_username": internal_username,
+        "device_id": mac,
+        "public_key": public_key,
+        "private_key": private_key,
+    })
+    with open(config_file, "w") as f:
+        json.dump({
             "original_username": original_username,
             "internal_username": internal_username,
-            "device_id": device_id,
-            "public_key": public_key,
-            "private_key": private_key,
-        })
-        with open(config_file, "w") as f:
-            json.dump({
-                "original_username": original_username,
-                "internal_username": internal_username,
-                "device_id": device_id,
-                "public_key": public_key.public_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PublicFormat.SubjectPublicKeyInfo
-                ).decode(),
-                "private_key": private_key.private_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PrivateFormat.PKCS8,
-                    encryption_algorithm=serialization.NoEncryption()
-                ).decode(),
-            }, f)
-    print(f"Welcome, {user_data['original_username']} (Device ID: {user_data['device_id']})")
+            "device_id": mac,
+            "public_key": public_key.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo
+            ).decode(),
+            "private_key": private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption()
+            ).decode(),
+        }, f)
 
 async def connect_to_peer(peer_ip, port=8765):
     if peer_ip in connections:
@@ -185,7 +209,7 @@ async def send_message_to_peers(message, target_username=None):
                 logging.warning(f"No active connection to {target_username}")
                 return False
         else:
-            return False  # Error handled in user_input
+            return False
     
     for peer_ip, websocket in list(connections.items()):
         if websocket.state == State.OPEN:
@@ -355,7 +379,6 @@ async def user_input():
                 if target_username in peer_usernames:
                     print(f"Already connected to {target_username}")
                     continue
-                # Check if target_username is in discovered peers by IP
                 discovered_ips = set(peer_list)
                 peer_ip = None
                 for ip in discovered_ips:
@@ -467,7 +490,10 @@ async def user_input():
                 continue
 
             if message == "/changeName":
-                os.remove("user_config.json")
+                mac = get_mac_address()
+                config_file = f"user_config_{mac}.json"
+                if os.path.exists(config_file):
+                    os.remove(config_file)
                 await initialize_user_config()
                 print(f"Username changed to {user_data['original_username']}")
                 continue
