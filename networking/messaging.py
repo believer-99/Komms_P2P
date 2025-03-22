@@ -452,6 +452,19 @@ async def user_input():
         try:
             message = await ainput(f"{user_data['original_username']} > ")
 
+            if message.startswith("/changename "):
+                new_username = message[12:].strip()  # Extract text after "/changename "
+                if not new_username:
+                    print("Usage: /changename <new_username>")
+                    continue
+                mac = get_mac_address()
+                config_file = f"user_config_{mac}.json"
+                if os.path.exists(config_file):
+                    os.remove(config_file)
+                # Create new config with the new username
+                await create_new_user_config(config_file, mac, new_username)
+                print(f"Username changed to {new_username}")
+                continue
             if message == "/help":
                 print(
                     """
@@ -643,6 +656,38 @@ async def user_input():
             logging.exception(f"Error in user_input: {e}")
             await asyncio.sleep(1)
     logging.info("user_input exited due to shutdown.")
+
+async def create_new_user_config(config_file, mac, username=None):
+    if username is None:
+        original_username = await ainput("Enter your username: ")
+    else:
+        original_username = username
+    internal_username = f"{original_username}_{uuid.uuid4()}"
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+    user_data.clear()
+    user_data.update({
+        "original_username": original_username,
+        "internal_username": internal_username,
+        "device_id": mac,
+        "public_key": public_key,
+        "private_key": private_key,
+    })
+    with open(config_file, "w") as f:
+        json.dump({
+            "original_username": original_username,
+            "internal_username": internal_username,
+            "device_id": mac,
+            "public_key": public_key.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo
+            ).decode(),
+            "private_key": private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption()
+            ).decode(),
+        }, f)
 
 async def display_messages():
     while not shutdown_event.is_set():
