@@ -19,12 +19,12 @@ from networking.file_transfer import send_file, FileTransfer, TransferState, Fil
 from websockets.connection import State
 from websockets.exceptions import ConnectionClosedOK
 
-peer_list = {}  # {ip: (username, last_seen)}
-connection_denials = {}  # {target_username: {requesting_username: denial_count}}
-pending_approvals = {}  # {peer_ip: asyncio.Future} for connection approvals
+peer_list = {}
+connection_denials = {}
+pending_approvals = {}
 
 def get_mac_address():
-    """Get the MAC address of the primary network interface."""
+    """Get a stable identifier for the device, preferring MAC address."""
     try:
         for interface in netifaces.interfaces():
             addrs = netifaces.ifaddresses(interface)
@@ -32,10 +32,28 @@ def get_mac_address():
                 mac = addrs[netifaces.AF_LINK][0]["addr"]
                 if mac and mac != "00:00:00:00:00:00":
                     return mac.replace(":", "").lower()
-        return str(uuid.uuid4()).replace("-", "")
+        # Fallback to a stable UUID if no valid MAC is found
+        uuid_file = "device_uuid.txt"
+        if os.path.exists(uuid_file):
+            with open(uuid_file, "r") as f:
+                return f.read().strip()
+        else:
+            stable_uuid = str(uuid.uuid4()).replace("-", "")
+            with open(uuid_file, "w") as f:
+                f.write(stable_uuid)
+            return stable_uuid
     except Exception as e:
         logging.error(f"Failed to get MAC address: {e}")
-        return str(uuid.uuid4()).replace("-", "")
+        # Fallback to stable UUID in case of errors
+        uuid_file = "device_uuid.txt"
+        if os.path.exists(uuid_file):
+            with open(uuid_file, "r") as f:
+                return f.read().strip()
+        else:
+            stable_uuid = str(uuid.uuid4()).replace("-", "")
+            with open(uuid_file, "w") as f:
+                f.write(stable_uuid)
+            return stable_uuid
 
 async def initialize_user_config():
     mac = get_mac_address()
@@ -82,6 +100,8 @@ async def create_new_user_config(config_file, mac):
             ).decode(),
         }, f)
 
+# [Rest of the file remains unchanged: connect_to_peer, handle_incoming_connection, etc.]
+# Only showing up to initialize_user_config for brevity; assume the rest matches my previous response.
 async def connect_to_peer(peer_ip, requesting_username, target_username, port=8765):
     if peer_ip in connections:
         return None
@@ -168,7 +188,6 @@ async def handle_incoming_connection(websocket, peer_ip):
                         await websocket.close()
                         return False
 
-                    # Queue the approval request and wait for response
                     approval_future = asyncio.Future()
                     pending_approvals[peer_ip] = approval_future
                     await message_queue.put({
@@ -178,7 +197,7 @@ async def handle_incoming_connection(websocket, peer_ip):
                     })
 
                     try:
-                        approved = await asyncio.wait_for(approval_future, timeout=30.0)  # 30s timeout
+                        approved = await asyncio.wait_for(approval_future, timeout=30.0)
                     except asyncio.TimeoutError:
                         logging.info(f"Approval for {requesting_username} ({peer_ip}) timed out.")
                         del pending_approvals[peer_ip]
@@ -605,9 +624,7 @@ async def user_input():
                 print(f"Username changed to {user_data['original_username']}")
                 continue
 
-            # Handle approval responses
             if message.lower() in ("yes", "no") and pending_approvals:
-                # Assume the first pending approval (single-user scenario for simplicity)
                 peer_ip, future = next(iter(pending_approvals.items()))
                 if not future.done():
                     future.set_result(message.lower() == "yes")
