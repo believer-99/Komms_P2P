@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import websockets
-import socket
 import os
 import json
 import hashlib
@@ -12,11 +11,12 @@ from aioconsole import ainput
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from networking.discovery import PeerDiscovery
+from networking.utils import get_own_ip  # Import from utils
 from networking.shared_state import active_transfers, message_queue, connections, user_data, peer_public_keys, peer_usernames
 from networking.file_transfer import send_file, FileTransfer, TransferState, FileTransferManager
 from websockets.connection import State
 
-peer_list = {}  # Now a dict: {ip: (username, last_seen)}
+peer_list = {}  # {ip: (username, last_seen)}
 
 def get_mac_address():
     """Get the MAC address of the primary network interface."""
@@ -502,27 +502,6 @@ async def user_input():
         except Exception as e:
             logging.exception(f"Error in user_input: {e}")
             await asyncio.sleep(1)
-
-async def get_own_ip():
-    try:
-        for interface in netifaces.interfaces():
-            try:
-                addrs = netifaces.ifaddresses(interface)
-                if netifaces.AF_INET in addrs:
-                    ip = addrs[netifaces.AF_INET][0]["addr"]
-                    if not (ip.startswith("127.") or ip.startswith("169.254.")):
-                        return ip
-            except ValueError:
-                continue
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            s.connect(("8.8.8.8", 80))
-            return s.getsockname()[0]
-        except Exception:
-            return "127.0.0.1"
-    except Exception as e:
-        logging.error(f"IP detection failed: {e}")
-        return "127.0.0.1"
 
 async def display_messages():
     while True:

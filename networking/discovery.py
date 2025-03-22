@@ -3,13 +3,13 @@ import socket
 import json
 import logging
 import netifaces
-from networking.messaging import get_own_ip
+from networking.utils import get_own_ip  # Import from utils
 from networking.shared_state import user_data
 
 class PeerDiscovery:
     def __init__(self, broadcast_interval=5, cleanup_interval=60):
         self.broadcast_port = 37020
-        self.peer_list = {}  # Changed to dict: {ip: (username, last_seen)}
+        self.peer_list = {}  # {ip: (username, last_seen)}
         self.broadcast_interval = broadcast_interval
         self.cleanup_interval = cleanup_interval
         self.running = True
