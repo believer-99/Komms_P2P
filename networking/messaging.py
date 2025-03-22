@@ -122,7 +122,6 @@ async def connect_to_peer(peer_ip, requesting_username, target_username, port=87
                 "target_username": target_username,
                 "key": public_key_pem
             }))
-            # Wait for approval response
             approval_response = await websocket.recv()
             approval_data = json.loads(approval_response)
             if approval_data["type"] == "CONNECTION_RESPONSE" and approval_data["approved"]:
@@ -159,6 +158,26 @@ async def connect_to_peer(peer_ip, requesting_username, target_username, port=87
         if 'websocket' in locals():
             await websocket.close()
         return None
+
+async def disconnect_from_peer(peer_username):
+    """Disconnect from a specified peer."""
+    if peer_username in peer_usernames:
+        peer_ip = peer_usernames[peer_username]
+        if peer_ip in connections:
+            websocket = connections[peer_ip]
+            try:
+                await websocket.close()
+                del connections[peer_ip]
+                del peer_public_keys[peer_ip]
+                del peer_usernames[peer_username]
+                print(f"Disconnected from {peer_username} ({peer_ip})")
+            except Exception as e:
+                logging.error(f"Error disconnecting from {peer_username} ({peer_ip}): {e}")
+                print(f"Failed to disconnect from {peer_username}: {e}")
+        else:
+            print(f"Not connected to {peer_username}")
+    else:
+        print(f"No such peer: {peer_username}")
 
 async def handle_incoming_connection(websocket, peer_ip):
     """Handle an incoming peer connection request."""
@@ -294,7 +313,6 @@ async def send_message_to_peers(message, target_username=None):
                     await connections[peer_ip].send(
                         json.dumps({"type": "MESSAGE", "message": encrypted_message})
                     )
-                    # Removed logging.info here to avoid cluttering console
                     return True
                 except Exception as e:
                     logging.error(f"Failed to send message to {target_username} ({peer_ip}): {e}")
@@ -320,7 +338,6 @@ async def send_message_to_peers(message, target_username=None):
                 await websocket.send(
                     json.dumps({"type": "MESSAGE", "message": encrypted_msg})
                 )
-                # Removed logging.info here to avoid cluttering console
             except Exception as e:
                 logging.error(f"Failed to send message to {peer_ip}: {e}")
     return True
@@ -423,6 +440,21 @@ async def user_input(discovery):
                 shutdown_event.set()
                 raise asyncio.CancelledError
 
+            elif message == "/help":
+                print("\nAvailable commands:")
+                print("/connect <username>    - Connect to a peer by username")
+                print("/disconnect <username> - Disconnect from a peer by username")
+                print("/msg <username> <message> - Send message to a peer by username")
+                print("/send <username> <file> - Send file to a peer by username")
+                print("/pause <transfer_id>   - Pause a file transfer")
+                print("/resume <transfer_id>  - Resume a file transfer")
+                print("/transfers             - List active transfers")
+                print("/list                  - Show available peers")
+                print("/changename <new_username> - Change your username")
+                print("/exit                  - Exit the application")
+                print("/help                  - Show this help")
+                continue
+
             elif message == "/list":
                 print("\nAvailable peers:")
                 own_ip = await get_own_ip()
@@ -449,9 +481,13 @@ async def user_input(discovery):
                         connections[peer_ip] = websocket
                         asyncio.create_task(receive_peer_messages(websocket, peer_ip))
                         print(f"Connected to {target_username}")
-                    # No else clause here; connect_to_peer handles denial/failure messages
                 else:
                     print(f"No such peer: {target_username}")
+                continue
+
+            elif message.startswith("/disconnect "):
+                target_username = message[12:].strip()
+                await disconnect_from_peer(target_username)
                 continue
 
             elif message.startswith("/msg "):
@@ -482,6 +518,37 @@ async def user_input(discovery):
                         print(f"Not connected to {target_username}")
                 else:
                     print(f"No such peer: {target_username}")
+                continue
+
+            elif message.startswith("/pause "):
+                transfer_id = message[7:].strip()
+                if transfer_id in active_transfers:
+                    transfer = active_transfers[transfer_id]
+                    await transfer.pause()
+                    print(f"Paused transfer {transfer_id}")
+                else:
+                    print(f"No such transfer: {transfer_id}")
+                continue
+
+            elif message.startswith("/resume "):
+                transfer_id = message[8:].strip()
+                if transfer_id in active_transfers:
+                    transfer = active_transfers[transfer_id]
+                    await transfer.resume()
+                    print(f"Resumed transfer {transfer_id}")
+                else:
+                    print(f"No such transfer: {transfer_id}")
+                continue
+
+            elif message == "/transfers":
+                if not active_transfers:
+                    print("\nNo active transfers.")
+                else:
+                    print("\nActive transfers:")
+                    for transfer_id, transfer in active_transfers.items():
+                        direction = "Sending" if transfer.direction == "send" else "Receiving"
+                        progress = (transfer.transferred_size / transfer.total_size * 100) if transfer.total_size > 0 else 0
+                        print(f"- {transfer_id}: {direction} '{transfer.file_path}' ({progress:.2f}%, {transfer.state.value})")
                 continue
 
             elif message.startswith("/changename "):
@@ -518,7 +585,7 @@ async def user_input(discovery):
             await asyncio.sleep(1)
 
 async def display_messages():
-    """Display messages from the message queue."""
+    """Display messages from the message queue without re-printing the prompt."""
     while not shutdown_event.is_set():
         try:
             item = await message_queue.get()
@@ -528,7 +595,7 @@ async def display_messages():
                 print(f"\nConnection request from {requesting_username} ({peer_ip}). Approve? (yes/no)")
             else:
                 print(f"\n{item}")
-            print(f"{user_data['original_username']} > ", end="", flush=True)
+            # Prompt is handled by user_input(), no extra print here
         except asyncio.CancelledError:
             break
         except Exception as e:
