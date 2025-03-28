@@ -2,3 +2,4 @@ venv/
 .venv/
 **/__pycache__/
 user_config_*.json  # Updated to ignore device-specific config files
+downloads/
