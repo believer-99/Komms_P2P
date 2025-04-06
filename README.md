@@ -4,8 +4,12 @@
 P2P Chat and File Transfer is a decentralized, peer-to-peer application built in Python that enables users to discover peers on a local network, establish secure WebSocket connections, exchange encrypted messages, and transfer files. The application leverages UDP broadcasts for peer discovery, RSA encryption for secure communication, and asyncio for asynchronous operations, ensuring efficient and real-time interaction between peers.
 
 ## Screenshots
+(./assets/1.png)
+(./assets/2.png)
+(./assets/3.png)
+(./assets/4.png)
 
-
+## [Demo Video] (./assets/demo_video/P2P_App.mkv)
 ## Features Implemented
 
 ### Frontend
