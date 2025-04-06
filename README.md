@@ -9,7 +9,7 @@ P2P Chat and File Transfer is a decentralized, peer-to-peer application built in
 ![Active Transfers and Play/Pause](./assets/3.png)
 ![Application Shutdown](./assets/4.png)
 
-![Demo Video](./assets/demo_video/P2P_App.mp4)
+![Demo Video (Watch using Earphones)](./assets/demo_video/P2P_App.mp4)
 ## Features Implemented
 
 ### Frontend
