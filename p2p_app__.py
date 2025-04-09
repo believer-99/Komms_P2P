@@ -9,29 +9,27 @@ import hashlib
 import netifaces
 import traceback
 import time
-from collections import defaultdict # For chat histories
+from collections import defaultdict 
 
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 
 from PyQt6.QtCore import (QCoreApplication, QObject, QRunnable, QSettings,
-                          QThreadPool, pyqtSignal, pyqtSlot, Qt, QThread, QTimer, QSize) # Added QTimer, QSize
+                          QThreadPool, pyqtSignal, pyqtSlot, Qt, QThread, QTimer, QSize) 
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QLabel,
                              QLineEdit, QListWidget, QListWidgetItem,
                              QMainWindow, QMessageBox, QPushButton,
                              QProgressBar, QVBoxLayout, QWidget, QTabWidget,
                              QTextEdit, QHBoxLayout, QStatusBar, QMenuBar, QMenu,
-                             QStyle, QSplitter, QStackedWidget, QFrame) # Added QSplitter, QStackedWidget, QFrame
-from PyQt6.QtGui import QIcon, QFont, QCloseEvent, QPalette, QColor, QTextCursor # Added QTextCursor
+                             QStyle, QSplitter, QStackedWidget, QFrame) 
+from PyQt6.QtGui import QIcon, QFont, QCloseEvent, QPalette, QColor, QTextCursor 
 
-# --- ACTUAL Networking Imports ---
-# Make sure these paths are correct relative to your frontend script
 
 try:
     from networking.discovery import PeerDiscovery
     from networking.messaging.core import (
         handle_incoming_connection, receive_peer_messages, send_message_to_peers,
-        maintain_peer_list, connections # Removed _cleanup_peer_state
+        maintain_peer_list, connections
     )
     from networking.messaging.utils import (
          initialize_user_config, connect_to_peer, disconnect_from_peer,
