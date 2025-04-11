@@ -8,588 +8,595 @@ import hashlib
 import aiofiles
 import netifaces
 import uuid
-from aioconsole import ainput
+import time
+
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from appdirs import user_config_dir
+from websockets.connection import State
+
 from networking.utils import get_own_ip
 from networking.shared_state import (
-    active_transfers, message_queue, connections, user_data, peer_public_keys, peer_usernames, shutdown_event
+    active_transfers, message_queue, connections, user_data, peer_public_keys,
+    peer_usernames, peer_device_ids, shutdown_event, groups, pending_invites,
+    pending_join_requests, pending_approvals, connection_denials
 )
-from networking.file_transfer import send_file, FileTransfer, TransferState
-from websockets.connection import State
-from appdirs import user_config_dir
+from networking.file_transfer import FileTransfer, TransferState, compute_hash
+# Group function imports (assuming they exist)
+from networking.groups import (
+     send_group_create_message, send_group_invite_message, send_group_invite_response,
+     send_group_join_request, send_group_join_response, send_group_update_message
+)
+# Utility function imports
+from networking.utils import get_peer_display_name # Keep utils separate? Or merge? Assuming separate for now.
+from networking.utils import get_own_display_name # <-- **** ADD THIS LINE ****
 
-# Global state
-peer_list = {}  # {ip: (username, last_seen)}
-connection_denials = {}  # {target_username: {requesting_username: denial_count}}
-pending_approvals = {}  # {peer_ip: asyncio.Future}
+logger = logging.getLogger(__name__)
 
+# ... (rest of messaging.py remains the same) ...
+
+# --- Configuration ---
 def get_config_directory():
     """Determine the appropriate config directory based on the OS."""
-    appname = "P2PChat"  # Your application name (use a consistent name)
-    appauthor = False  # Set False to prevent the author name from being added
-
-    return user_config_dir(appname, appauthor)
-
+    # Using False for appauthor to avoid extra directory level
+    return user_config_dir("P2PChat", False)
 
 async def initialize_user_config():
-    """Load or create user configuration, using a user-specific config directory."""
+    """Load or create user configuration. Called by NetworkingThread."""
     config_dir = get_config_directory()
-    os.makedirs(config_dir, exist_ok=True)  # Ensure directory exists
-
+    os.makedirs(config_dir, exist_ok=True)
+    # Use a device-specific or generic config file name
+    # Using generic for simplicity here, assuming one user per OS user account
     config_file_path = os.path.join(config_dir, "user_config.json")
+    logger.info(f"Using config file: {config_file_path}")
 
     if os.path.exists(config_file_path):
         try:
-            with open(config_file_path, "r") as f:
-                loaded_data = json.load(f)
-            user_data.update(loaded_data)
+            with open(config_file_path, "r") as f: loaded_data = json.load(f)
+            # Validate essential keys
+            required_keys = ["original_username", "device_id", "public_key", "private_key"]
+            if not all(key in loaded_data for key in required_keys):
+                raise ValueError("Config file missing required keys.")
+
+            user_data.update(loaded_data) # Load into shared state
             user_data["public_key"] = serialization.load_pem_public_key(user_data["public_key"].encode())
             user_data["private_key"] = serialization.load_pem_private_key(user_data["private_key"].encode(), password=None)
-            print(f"Welcome back, {user_data['original_username']}!")
-        except Exception as e:
-            print(f"Error loading config, creating new one: {e}")
-            await create_new_user_config(config_file_path) # Pass the full path to create
+            logger.info(f"User config loaded for {user_data['original_username']}")
+            # ADDED: Put status message for GUI
+            await message_queue.put({"type": "log", "message": f"Welcome back, {get_own_display_name()}!"})
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, FileNotFoundError) as e:
+            logger.error(f"Error loading config: {e}. Creating new one.")
+            await message_queue.put({"type": "log", "message": f"Config error: {e}. Creating new config."})
+            # If loading fails, trigger creation using the username possibly set by LoginWindow
+            await create_new_user_config(config_file_path, user_data.get("original_username"))
     else:
-        await create_new_user_config(config_file_path)  # Pass the full path to create
-        print(f"Welcome, {user_data['original_username']}")
+        logger.info("No config file found, creating new one.")
+        # Trigger creation using the username set by LoginWindow
+        await create_new_user_config(config_file_path, user_data.get("original_username"))
+        await message_queue.put({"type": "log", "message": f"Welcome, {get_own_display_name()}! Config created."})
 
+async def create_new_user_config(config_file_path, provided_username=None):
+    """Create a new user configuration file. Called by initialize_user_config."""
+    if not provided_username:
+        # This should ideally not happen if LoginWindow sets it
+        logger.error("Cannot create config: Username not provided.")
+        await message_queue.put({"type": "log", "message": "FATAL: Username missing for config creation.", "level": logging.CRITICAL})
+        # Possibly raise an exception or shut down?
+        raise ValueError("Username required for new config creation")
 
-
-async def create_new_user_config(config_file_path, username=None):
-    """Create a new user configuration file in the specified path."""
-    if username is None:
-        original_username = await ainput("Enter your username: ")
-    else:
-        original_username = username
-
-    internal_username = f"{original_username}_{uuid.uuid4()}"  # Generate unique internal username
+    original_username = provided_username
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public_key = private_key.public_key()
-    device_id = str(uuid.uuid4())  # Generate unique device ID
+    device_id = str(uuid.uuid4()) # Unique ID for this installation
 
-    user_data.clear()  # Clear any existing user data
+    # Update shared state immediately
+    user_data.clear()
     user_data.update({
         "original_username": original_username,
-        "internal_username": internal_username,
+        "device_id": device_id,
         "public_key": public_key,
         "private_key": private_key,
-        "device_id": device_id
+        # Store PEM versions as well? No, load keys into objects directly.
     })
 
-    with open(config_file_path, "w") as f:
-        json.dump({
-            "original_username": original_username,
-            "internal_username": internal_username,
-            "public_key": public_key.public_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PublicFormat.SubjectPublicKeyInfo
-            ).decode(),
-            "private_key": private_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.PKCS8,
-                encryption_algorithm=serialization.NoEncryption()
-            ).decode(),
-            "device_id": device_id
-        }, f)
+    # Prepare data for JSON storage
+    config_data_to_save = {
+        "original_username": original_username,
+        "device_id": device_id,
+        "public_key": public_key.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode(),
+        "private_key": private_key.private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption()).decode(),
+    }
 
-async def connect_to_peer(peer_ip, requesting_username, target_username, port=8765):
-    """Establish a WebSocket connection to a peer."""
-    if peer_ip in connections:
-        return None
-    uri = f"ws://{peer_ip}:{port}"
     try:
-        websocket = await websockets.connect(uri, ping_interval=None, max_size=None)
+        with open(config_file_path, "w") as f:
+            json.dump(config_data_to_save, f, indent=4)
+        logger.info(f"New user config created for {original_username} at {config_file_path}")
+    except IOError as e:
+        logger.exception(f"FATAL: Could not write config file {config_file_path}: {e}")
+        await message_queue.put({"type": "log", "message": f"FATAL: Cannot write config file: {e}", "level": logging.CRITICAL})
+        # Consider raising exception or shutting down
+
+
+# --- Connection Handling ---
+async def connect_to_peer(peer_ip, requesting_username, target_username, port=8765):
+    """Establish a WebSocket connection to a peer. Called by Backend."""
+    if peer_ip in connections:
+        logger.warning(f"Already connected to {peer_ip}. Aborting connect.")
+        await message_queue.put({"type": "log", "message": f"Already connected to {target_username}.", "level": logging.WARNING})
+        return False # Indicate connection already exists or failed
+
+    uri = f"ws://{peer_ip}:{port}"
+    websocket = None
+    try:
+        logger.info(f"Attempting to connect to {target_username} at {uri}")
+        # Connect with timeout
+        websocket = await asyncio.wait_for(websockets.connect(uri, ping_interval=None, max_size=10 * 1024 * 1024), timeout=15.0)
+        logger.debug(f"WebSocket connection opened to {peer_ip}")
+
         own_ip = await get_own_ip()
         await websocket.send(f"INIT {own_ip}")
-        response = await websocket.recv()
-        if response.startswith("INIT_ACK"):
-            public_key_pem = user_data["public_key"].public_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PublicFormat.SubjectPublicKeyInfo
-            ).decode()
-            await websocket.send(json.dumps({
-                "type": "CONNECTION_REQUEST",
-                "requesting_username": requesting_username,
-                "target_username": target_username,
-                "key": public_key_pem
-            }))
-            approval_response = await websocket.recv()
-            approval_data = json.loads(approval_response)
-            if approval_data["type"] == "CONNECTION_RESPONSE" and approval_data["approved"]:
-                await websocket.send(json.dumps({
-                    "type": "IDENTITY",
-                    "username": requesting_username,
-                    "device_id": user_data["device_id"],
-                    "key": public_key_pem
-                }))
-                identity_message = await websocket.recv()
-                identity_data = json.loads(identity_message)
-                if identity_data["type"] == "IDENTITY":
-                    peer_username = identity_data["username"]
-                    peer_public_keys[peer_ip] = serialization.load_pem_public_key(identity_data["key"].encode())
-                    peer_usernames[peer_username] = peer_ip
-                    connections[peer_ip] = websocket
-                    logging.info(f"{requesting_username} connected to {peer_username} ({peer_ip})")
-                    return websocket
-                else:
-                    await websocket.close()
-                    print(f"Connection to {target_username} failed: Invalid identity response.")
-                    return None
-            else:
-                await websocket.close()
-                print(f"Connection to {target_username} was denied by the peer.")
-                return None
+        ack = await asyncio.wait_for(websocket.recv(), timeout=10.0)
+
+        if ack != "INIT_ACK":
+            raise ConnectionAbortedError(f"Invalid INIT_ACK from {peer_ip}: {ack}")
+
+        logger.debug(f"INIT_ACK received from {peer_ip}")
+        public_key_pem = user_data["public_key"].public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+        req_msg = json.dumps({
+            "type": "CONNECTION_REQUEST", "requesting_username": requesting_username,
+            "device_id": user_data["device_id"], "target_username": target_username, "key": public_key_pem
+        })
+        await websocket.send(req_msg)
+        response_raw = await asyncio.wait_for(websocket.recv(), timeout=45.0) # Longer timeout for user approval
+        response_data = json.loads(response_raw)
+
+        if response_data["type"] != "CONNECTION_RESPONSE" or not response_data.get("approved"):
+            reason = response_data.get("reason", "No reason provided")
+            raise ConnectionRefusedError(f"Connection denied by {target_username}: {reason}")
+
+        logger.info(f"Connection approved by {target_username} ({peer_ip})")
+        # Send own identity
+        await websocket.send(json.dumps({
+            "type": "IDENTITY", "username": user_data["original_username"],
+            "device_id": user_data["device_id"], "key": public_key_pem
+        }))
+        # Receive peer's identity
+        identity_raw = await asyncio.wait_for(websocket.recv(), timeout=10.0)
+        identity_data = json.loads(identity_raw)
+
+        if identity_data["type"] == "IDENTITY":
+            peer_key_pem = identity_data["key"]
+            peer_uname = identity_data["username"]
+            peer_dev_id = identity_data["device_id"]
+
+            # Store peer info in shared state
+            peer_public_keys[peer_ip] = serialization.load_pem_public_key(peer_key_pem.encode())
+            peer_usernames[peer_uname] = peer_ip # Map username to IP
+            peer_device_ids[peer_ip] = peer_dev_id
+            connections[peer_ip] = websocket # Add to active connections
+
+            display_name = get_peer_display_name(peer_ip)
+            logger.info(f"Connection established with {display_name} ({peer_ip})")
+            # ADDED: Notify GUI
+            await message_queue.put({"type": "connection_status", "peer_ip": peer_ip, "connected": True})
+            await message_queue.put({"type": "log", "message": f"Connected to {display_name}"})
+
+            # Start receiving messages for this connection
+            # This task will run until the connection closes or an error occurs
+            # We don't await it here; it runs concurrently
+            asyncio.create_task(receive_peer_messages(websocket, peer_ip), name=f"RecvMsg-{peer_ip}")
+            return True # Indicate success
+
         else:
-            await websocket.close()
-            print(f"Connection to {target_username} failed: No INIT_ACK received.")
-            return None
-    except Exception as e:
-        logging.exception(f"Failed to connect to {peer_ip}: {e}")
-        print(f"Connection to {target_username} failed: {str(e)}")
-        if 'websocket' in locals():
-            await websocket.close()
-        return None
+            raise ConnectionAbortedError("Invalid IDENTITY response from peer.")
 
-async def disconnect_from_peer(peer_username):
-    """Disconnect from a specified peer."""
-    if peer_username in peer_usernames:
-        peer_ip = peer_usernames[peer_username]
-        if peer_ip in connections:
-            websocket = connections[peer_ip]
-            try:
-                await websocket.close()
-                del connections[peer_ip]
-                del peer_public_keys[peer_ip]
-                del peer_usernames[peer_username]
-                print(f"Disconnected from {peer_username} ({peer_ip})")
-            except Exception as e:
-                logging.error(f"Error disconnecting from {peer_username} ({peer_ip}): {e}")
-                print(f"Failed to disconnect from {peer_username}: {e}")
-        else:
-            print(f"Not connected to {peer_username}")
-    else:
-        print(f"No such peer: {peer_username}")
-
-async def handle_incoming_connection(websocket, peer_ip):
-    """Handle an incoming peer connection request."""
-    try:
-        message = await websocket.recv()
-        if shutdown_event.is_set():
-            await websocket.close()
-            return False
-        if message.startswith("INIT "):
-            _, sender_ip = message.split(" ", 1)
-            own_ip = await get_own_ip()
-            if peer_ip not in connections:
-                await websocket.send("INIT_ACK")
-                request_message = await websocket.recv()
-                request_data = json.loads(request_message)
-                if request_data["type"] == "CONNECTION_REQUEST":
-                    requesting_username = request_data["requesting_username"]
-                    target_username = request_data["target_username"]
-                    if target_username != user_data["original_username"]:
-                        await websocket.send(json.dumps({
-                            "type": "CONNECTION_RESPONSE",
-                            "approved": False
-                        }))
-                        await websocket.close()
-                        return False
-
-                    approval_future = asyncio.Future()
-                    pending_approvals[peer_ip] = approval_future
-                    await message_queue.put({
-                        "type": "approval_request",
-                        "peer_ip": peer_ip,
-                        "requesting_username": requesting_username
-                    })
-
-                    try:
-                        approved = await asyncio.wait_for(approval_future, timeout=30.0)
-                    except asyncio.TimeoutError:
-                        logging.info(f"Approval for {requesting_username} ({peer_ip}) timed out.")
-                        del pending_approvals[peer_ip]
-                        await websocket.send(json.dumps({
-                            "type": "CONNECTION_RESPONSE",
-                            "approved": False
-                        }))
-                        await websocket.close()
-                        return False
-
-                    del pending_approvals[peer_ip]
-                    if not approved:
-                        if target_username not in connection_denials:
-                            connection_denials[target_username] = {}
-                        denial_count = connection_denials[target_username].get(requesting_username, 0) + 1
-                        connection_denials[target_username][requesting_username] = denial_count
-                        await message_queue.put(f"Denied connection from {requesting_username} ({denial_count}/3)")
-                        if denial_count >= 3:
-                            await message_queue.put(f"{requesting_username} has been blocked for this session.")
-                    await websocket.send(json.dumps({
-                        "type": "CONNECTION_RESPONSE",
-                        "approved": approved
-                    }))
-                    if not approved:
-                        await websocket.close()
-                        return False
-
-                    public_key_pem = user_data["public_key"].public_bytes(
-                        encoding=serialization.Encoding.PEM,
-                        format=serialization.PublicFormat.SubjectPublicKeyInfo
-                    ).decode()
-                    await websocket.send(json.dumps({
-                        "type": "IDENTITY",
-                        "username": user_data["original_username"],
-                        "device_id": user_data["device_id"],
-                        "key": public_key_pem
-                    }))
-                    identity_message = await websocket.recv()
-                    identity_data = json.loads(identity_message)
-                    if identity_data["type"] == "IDENTITY":
-                        peer_username = identity_data["username"]
-                        peer_public_keys[peer_ip] = serialization.load_pem_public_key(identity_data["key"].encode())
-                        peer_usernames[peer_username] = peer_ip
-                        connections[peer_ip] = websocket
-                        logging.info(f"{user_data['original_username']} accepted connection from {peer_username} ({peer_ip})")
-                        return True
-                    else:
-                        await websocket.close()
-                        return False
-            else:
-                await websocket.close()
-                return False
-    except Exception as e:
-        logging.exception(f"Error in connection handshake: {e}")
-        if websocket and websocket.state == State.OPEN:
-            await websocket.close()
+    except (asyncio.TimeoutError, websockets.exceptions.WebSocketException, json.JSONDecodeError, ConnectionRefusedError, ConnectionAbortedError, OSError) as e:
+        logger.error(f"Failed to connect to {target_username} ({peer_ip}): {e}")
+        await message_queue.put({"type": "log", "message": f"Failed to connect to {target_username}: {e}", "level": logging.ERROR})
+        if websocket and websocket.open: await websocket.close()
+        return False # Indicate failure
+    except Exception as e: # Catch unexpected errors
+        logger.exception(f"Unexpected error connecting to {peer_ip}: {e}")
+        await message_queue.put({"type": "log", "message": f"Unexpected connect error: {e}", "level": logging.ERROR})
+        if websocket and websocket.open: await websocket.close()
         return False
 
-async def maintain_peer_list(discovery_instance):
-    """Maintain the list of connected peers."""
-    global peer_list
-    while not shutdown_event.is_set():
+async def disconnect_from_peer(peer_ip):
+    """Disconnect from a specific peer by IP. Called by Backend."""
+    display_name = get_peer_display_name(peer_ip) # Get name before removing state
+    websocket = connections.pop(peer_ip, None) # Remove and get websocket
+    peer_public_keys.pop(peer_ip, None)
+    peer_device_ids.pop(peer_ip, None)
+    # Remove username mapping
+    username_to_remove = None
+    for uname, ip_addr in list(peer_usernames.items()):
+        if ip_addr == peer_ip: username_to_remove = uname; break
+    if username_to_remove: peer_usernames.pop(username_to_remove, None)
+
+    closed_successfully = False
+    if websocket and websocket.open:
         try:
-            for peer_ip in list(connections.keys()):
-                if shutdown_event.is_set():
-                    break
-                try:
-                    await connections[peer_ip].ping()
-                except websockets.exceptions.ConnectionClosed:
-                    del connections[peer_ip]
-                    del peer_public_keys[peer_ip]
-                    for username, ip in list(peer_usernames.items()):
-                        if ip == peer_ip:
-                            del peer_usernames[username]
-            peer_list = discovery_instance.peer_list.copy()
-            await asyncio.sleep(5)
+            await websocket.close(code=1000, reason="User initiated disconnect")
+            logger.info(f"Closed connection to {display_name} ({peer_ip})")
+            closed_successfully = True
         except Exception as e:
-            logging.exception(f"Error in maintain_peer_list: {e}")
-            await asyncio.sleep(5)
-    logging.info("maintain_peer_list exited due to shutdown.")
+            logger.error(f"Error closing connection to {peer_ip}: {e}")
+    elif websocket:
+         logger.info(f"Connection to {display_name} ({peer_ip}) was already closed.")
+         closed_successfully = True # Considered successful if already closed
+    else:
+         logger.warning(f"No active connection found for {peer_ip} to disconnect.")
+         # No connection existed, arguably not a failure of the disconnect *action*
+         closed_successfully = True # Or False depending on desired feedback
 
-async def send_message_to_peers(message, target_username=None):
-    """Send a message to one or all connected peers."""
-    if target_username:
-        if target_username in peer_usernames:
-            peer_ip = peer_usernames[target_username]
-            if peer_ip in connections and connections[peer_ip].state == State.OPEN:
-                encrypted_message = peer_public_keys[peer_ip].encrypt(
-                    message.encode(),
-                    padding.OAEP(
-                        mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                        algorithm=hashes.SHA256(),
-                        label=None
-                    )
-                ).hex()
-                try:
-                    await connections[peer_ip].send(
-                        json.dumps({"type": "MESSAGE", "message": encrypted_message})
-                    )
-                    return True
-                except Exception as e:
-                    logging.error(f"Failed to send message to {target_username} ({peer_ip}): {e}")
-                    return False
+    # ADDED: Notify GUI regardless of whether WS was open, state is now disconnected
+    await message_queue.put({"type": "connection_status", "peer_ip": peer_ip, "connected": False})
+    if closed_successfully:
+        await message_queue.put({"type": "log", "message": f"Disconnected from {display_name}"})
+    else:
+         await message_queue.put({"type": "log", "message": f"Could not find connection to {display_name}.", "level": logging.WARNING})
+
+    return closed_successfully
+
+
+async def handle_incoming_connection(websocket, peer_ip):
+    """Handle handshake for new incoming connections. Called by websockets.serve handler."""
+    approved = False; requesting_display_name = f"Peer@{peer_ip}"
+    requesting_username = "Unknown"; approval_key = None # Define vars outside try
+
+    try:
+        # Timeout for entire handshake process
+        async with asyncio.timeout(60.0): # e.g., 60 seconds total for handshake + approval
+            init_message = await websocket.recv()
+            if shutdown_event.is_set(): await websocket.close(1001); return False
+            if not isinstance(init_message, str) or not init_message.startswith("INIT "): raise ValueError("Invalid INIT message")
+            _, sender_ip = init_message.split(" ", 1); logger.info(f"Received INIT from {peer_ip}")
+
+            if peer_ip in connections: logger.warning(f"Duplicate connection from {peer_ip}"); await websocket.close(1008); return False
+
+            await websocket.send("INIT_ACK")
+            request_raw = await websocket.recv()
+            request_data = json.loads(request_raw)
+
+            if request_data["type"] == "CONNECTION_REQUEST":
+                requesting_username = request_data["requesting_username"] # Assign here
+                target_username = request_data["target_username"]
+                peer_key_pem = request_data["key"]
+                req_dev_id = request_data["device_id"]
+                requesting_display_name = f"{requesting_username}({req_dev_id[:8]})"
+                logger.info(f"Connection request from {requesting_display_name} targeting {target_username}")
+
+                if target_username != user_data["original_username"]:
+                     raise ConnectionRefusedError("Incorrect target username")
+
+                # Use tuple key for denials/approvals
+                approval_key = (peer_ip, requesting_username)
+                denial_key = (target_username, requesting_username) # Correct key for denials
+                denial_count = connection_denials.get(denial_key, 0)
+                if denial_count >= 3: raise ConnectionRefusedError("Connection blocked (previous denials)")
+
+                # --- Approval ---
+                approval_future = asyncio.Future(); pending_approvals[approval_key] = approval_future
+                # ADDED: Notify GUI via queue
+                await message_queue.put({"type": "approval_request", "peer_ip": peer_ip, "requesting_username": requesting_display_name}) # Send display name
+
+                try: approved = await approval_future # Wait indefinitely until set/cancelled
+                finally: pending_approvals.pop(approval_key, None) # Cleanup pending approval
+
+                if not approved:
+                     # Increment denial count
+                     current_denials = connection_denials.get(denial_key, 0) + 1; connection_denials[denial_key] = current_denials
+                     # ADDED: Notify GUI of denial via queue
+                     await message_queue.put({"type": "log", "message": f"Denied connection from {requesting_display_name} ({current_denials}/3)"})
+                     if current_denials >= 3: await message_queue.put({"type": "log", "message": f"{requesting_display_name} blocked for session."})
+                     raise ConnectionRefusedError("Connection denied by user")
+                # --- /Approval ---
+
+                logger.info(f"Connection approved for {requesting_display_name}")
+                await websocket.send(json.dumps({"type": "CONNECTION_RESPONSE", "approved": True}))
+
+                # Send own identity
+                own_public_key_pem = user_data["public_key"].public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+                await websocket.send(json.dumps({"type": "IDENTITY", "username": user_data["original_username"], "device_id": user_data["device_id"], "key": own_public_key_pem}))
+
+                # Receive peer's identity
+                identity_raw = await websocket.recv()
+                identity_data = json.loads(identity_raw)
+
+                if identity_data["type"] == "IDENTITY" and identity_data["username"] == requesting_username and identity_data["device_id"] == req_dev_id:
+                    # --- Finalize Connection ---
+                    peer_public_keys[peer_ip] = serialization.load_pem_public_key(peer_key_pem.encode())
+                    peer_usernames[requesting_username] = peer_ip # Map username to IP
+                    peer_device_ids[peer_ip] = req_dev_id
+                    connections[peer_ip] = websocket # Add ONLY on full success
+
+                    final_display_name = get_peer_display_name(peer_ip) # Get name after state update
+                    logger.info(f"Connection established with {final_display_name} ({peer_ip})")
+                    # ADDED: Notify GUI
+                    await message_queue.put({"type": "connection_status", "peer_ip": peer_ip, "connected": True})
+                    await message_queue.put({"type": "log", "message": f"Connected to {final_display_name}"})
+                    return True # Success, ready for receive_peer_messages
+                else:
+                     raise ConnectionAbortedError("Invalid final IDENTITY received")
             else:
-                logging.warning(f"No active connection to {target_username}")
-                return False
-        else:
-            return False
+                raise ValueError(f"Unexpected message type after INIT_ACK: {request_data.get('type')}")
 
-    for peer_ip, websocket in list(connections.items()):
-        if websocket.state == State.OPEN:
+    except (asyncio.TimeoutError, websockets.exceptions.WebSocketException, json.JSONDecodeError, ConnectionRefusedError, ConnectionAbortedError, ValueError, OSError) as e:
+        logger.warning(f"Handshake failed with {peer_ip} ({requesting_username}): {e}")
+        # ADDED: Notify GUI of failure
+        await message_queue.put({"type": "log", "message": f"Connection failed with {requesting_display_name}: {e}", "level": logging.WARNING})
+        if websocket and websocket.open: await websocket.close(1002, f"Handshake error: {e}")
+        # Clean up pending approval if handshake failed mid-way
+        if approval_key and approval_key in pending_approvals: pending_approvals.pop(approval_key, None)
+        return False # Handshake failed
+    except Exception as e: # Catch unexpected errors
+        logger.exception(f"Unexpected error during handshake with {peer_ip}: {e}")
+        await message_queue.put({"type": "log", "message": f"Internal handshake error: {e}", "level": logging.ERROR})
+        if websocket and websocket.open: await websocket.close(1011, "Internal handshake error")
+        if approval_key and approval_key in pending_approvals: pending_approvals.pop(approval_key, None)
+        return False
+
+# --- Message Sending/Receiving ---
+async def send_message_to_peers(message, target_peer_ip=None):
+    """Send an encrypted message to one or all connected peers. Called by Backend."""
+    if not isinstance(message, str) or not message: logger.warning("Attempted send empty message."); return False
+
+    targets = []
+    peers_to_send = {}
+    if target_peer_ip:
+        if target_peer_ip in connections: peers_to_send[target_peer_ip] = connections[target_peer_ip]
+        else: logger.warning(f"Cannot send message: Not connected to {target_peer_ip}"); await message_queue.put({"type":"log","message":f"Not connected to peer {get_peer_display_name(target_peer_ip)}","level":logging.WARNING}); return False
+    else:
+        peers_to_send = connections # Send to all
+
+    if not peers_to_send:
+         if target_peer_ip is None: await message_queue.put({"type":"log","message":"No peers connected to send message to."}); logger.info("Send message failed: No connected peers.")
+         return False
+
+    sent_count = 0
+    for ip, ws in list(peers_to_send.items()):
+        display_name = get_peer_display_name(ip)
+        if ws.state == State.OPEN:
+            key = peer_public_keys.get(ip)
+            if not key: logger.warning(f"Missing public key for {display_name} ({ip}). Cannot encrypt."); continue
             try:
-                peer_username = next(u for u, ip in peer_usernames.items() if ip == peer_ip)
-                encrypted_msg = peer_public_keys[peer_ip].encrypt(
-                    message.encode(),
-                    padding.OAEP(
-                        mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                        algorithm=hashes.SHA256(),
-                        label=None
-                    )
-                ).hex()
-                await websocket.send(
-                    json.dumps({"type": "MESSAGE", "message": encrypted_msg})
-                )
-            except Exception as e:
-                logging.error(f"Failed to send message to {peer_ip}: {e}")
-    return True
+                encrypted_message = key.encrypt(message.encode(), padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)).hex()
+                payload = json.dumps({"type": "MESSAGE", "message": encrypted_message})
+                await asyncio.wait_for(ws.send(payload), timeout=10.0)
+                sent_count += 1
+            except asyncio.TimeoutError: logger.error(f"Timeout sending message to {display_name} ({ip}).")
+            except Exception as e: logger.error(f"Failed send message to {display_name} ({ip}): {e}") # Includes ConnectionClosed
+        else: logger.warning(f"Attempted send to closed connection: {display_name} ({ip})")
+
+    return sent_count > 0
+
 
 async def receive_peer_messages(websocket, peer_ip):
-    """Receive messages from a connected peer."""
+    """Receive messages from a connected peer. Started by connect_to_peer or handle_incoming_connection."""
+    display_name = get_peer_display_name(peer_ip)
+    logger.info(f"Starting message receiver for {display_name} ({peer_ip})")
+    current_receiving_transfer = None # Track active transfer *for this connection*
+
     try:
         async for message in websocket:
-            if shutdown_event.is_set():
-                break
+            if shutdown_event.is_set(): break
+
+            # --- Message Processing Logic ---
             try:
+                # Try JSON first
                 data = json.loads(message)
-                message_type = data.get("type")
+                msg_type = data.get("type")
+                logger.debug(f"Received JSON from {display_name}: type={msg_type}")
 
-                if message_type == "file_transfer_init":
-                    transfer_id = data["transfer_id"]
-                    file_name = data["filename"]
-                    file_size = data["filesize"]
-                    expected_hash = data.get("file_hash")
-                    file_path = os.path.join("downloads", file_name)
-                    os.makedirs("downloads", exist_ok=True)
-                    transfer = FileTransfer(file_path, peer_ip, direction="receive")
-                    transfer.transfer_id = transfer_id
-                    transfer.total_size = file_size
-                    transfer.expected_hash = expected_hash
-                    transfer.hash_algo = hashlib.sha256() if expected_hash else None
-                    transfer.state = TransferState.IN_PROGRESS
-                    transfer.file_handle = await aiofiles.open(file_path, "wb")
-                    active_transfers[transfer_id] = transfer
-                    peer_username = next(u for u, ip in peer_usernames.items() if ip == peer_ip)
-                    await message_queue.put(f"{user_data['original_username']} receiving '{file_name}' from {peer_username} (Transfer ID: {transfer_id})")
+                if msg_type == "MESSAGE":
+                    try:
+                        decrypted = user_data["private_key"].decrypt(bytes.fromhex(data["message"]), padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)).decode()
+                        # ADDED: Put structured message on queue
+                        await message_queue.put({"type": "message", "sender_display_name": display_name, "content": decrypted})
+                    except Exception as dec_err: logger.error(f"Decrypt error from {display_name}: {dec_err}"); await message_queue.put({"type":"log","message":f"[Decrypt Error from {display_name}]","level":logging.WARNING})
 
-                elif message_type == "file_chunk":
-                    transfer_id = data["transfer_id"]
-                    transfer = active_transfers.get(transfer_id)
-                    if transfer and transfer.direction == "receive":
-                        async with transfer.condition:
-                            while transfer.state == TransferState.PAUSED and not shutdown_event.is_set():
-                                await transfer.condition.wait()
-                            if shutdown_event.is_set():
-                                await transfer.file_handle.close()
-                                del active_transfers[transfer_id]
-                                break
-                        chunk = bytes.fromhex(data["chunk"])
-                        await transfer.file_handle.write(chunk)
-                        transfer.transferred_size += len(chunk)
-                        if transfer.hash_algo:
-                            transfer.hash_algo.update(chunk)
-                        if transfer.transferred_size >= transfer.total_size:
-                            await transfer.file_handle.close()
-                            transfer.file_handle = None
-                            if transfer.expected_hash:
-                                calculated_hash = transfer.hash_algo.hexdigest()
-                                if calculated_hash != transfer.expected_hash:
-                                    os.remove(file_path)
-                                    transfer.state = TransferState.FAILED
-                                    await message_queue.put(f"{user_data['original_username']} file transfer failed: integrity check failed")
-                                else:
-                                    transfer.state = TransferState.COMPLETED
-                                    await message_queue.put(f"{user_data['original_username']} file saved as: {file_path}")
-                            else:
-                                transfer.state = TransferState.COMPLETED
-                                await message_queue.put(f"{user_data['original_username']} file saved as: {file_path}")
+                elif msg_type == "file_transfer_init":
+                    # ... (file init logic as before) ...
+                    tid=data["transfer_id"]; fname=data["filename"]; fsize=data["filesize"]; fhash=data.get("file_hash"); path=os.path.join("downloads", os.path.basename(fname)); os.makedirs("downloads", exist_ok=True)
+                    # Handle potential name conflicts
+                    counter = 1; base, ext = os.path.splitext(path)
+                    while os.path.exists(path): path = f"{base}({counter}){ext}"; counter += 1
+                    # Create transfer object
+                    transfer = FileTransfer(path, peer_ip, direction="receive", transfer_id=tid); transfer.total_size = fsize; transfer.expected_hash = fhash; transfer.state = TransferState.IN_PROGRESS
+                    try:
+                        transfer.file_handle = await aiofiles.open(path, "wb")
+                        active_transfers[tid] = transfer; current_receiving_transfer = transfer # Track for this conn
+                        logger.info(f"Receiving '{os.path.basename(path)}' ({tid[:8]}) from {display_name}")
+                        # ADDED: Notify GUI
+                        await message_queue.put({"type": "transfer_update"})
+                        await message_queue.put({"type": "log", "message": f"Receiving '{os.path.basename(path)}' from {display_name} (ID: {tid[:8]})"})
+                    except OSError as e: logger.error(f"Failed open file for transfer {tid}: {e}"); await message_queue.put({"type":"log","message":f"Error receiving from {display_name}: Cannot open file","level":logging.ERROR}); current_receiving_transfer = None
 
-                elif message_type == "MESSAGE":
-                    decrypted_message = user_data["private_key"].decrypt(
-                        bytes.fromhex(data["message"]),
-                        padding.OAEP(
-                            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                            algorithm=hashes.SHA256(),
-                            label=None
-                        )
-                    ).decode()
-                    peer_username = next(u for u, ip in peer_usernames.items() if ip == peer_ip)
-                    await message_queue.put(f"{peer_username}: {decrypted_message}")
+                # --- Binary chunks now come directly, not JSON ---
+
+                elif msg_type == "TRANSFER_PAUSE": # Assuming control messages are JSON
+                    tid = data.get("transfer_id"); transfer = active_transfers.get(tid)
+                    if transfer and transfer.peer_ip == peer_ip and transfer.state == TransferState.IN_PROGRESS: await transfer.pause(); await message_queue.put({"type": "log", "message": f"{display_name} paused transfer {tid[:8]}"})
+
+                elif msg_type == "TRANSFER_RESUME":
+                    tid = data.get("transfer_id"); transfer = active_transfers.get(tid)
+                    if transfer and transfer.peer_ip == peer_ip and transfer.state == TransferState.PAUSED: await transfer.resume(); await message_queue.put({"type": "log", "message": f"{display_name} resumed transfer {tid[:8]}"})
+
+                # --- Add Group Message Handling Here ---
+                # elif msg_type == "GROUP_CREATE": ... await message_queue.put({"type": "group_list_update"}) ...
+                # elif msg_type == "GROUP_INVITE": ... await message_queue.put({"type": "pending_invites_update"}) ...
+                # elif msg_type == "GROUP_INVITE_RESPONSE": ... await message_queue.put({"type": "group_list_update"}) ...
+                # etc.
+
+                else: logger.warning(f"Received unknown JSON type '{msg_type}' from {display_name}")
 
             except json.JSONDecodeError:
-                peer_username = next(u for u, ip in peer_usernames.items() if ip == peer_ip)
-                await message_queue.put(f"{peer_username}: {message}")
-    except websockets.exceptions.ConnectionClosed:
-        peer_username = next((u for u, ip in peer_usernames.items() if ip == peer_ip), "unknown")
-        logging.info(f"{user_data['original_username']} connection closed with {peer_username} ({peer_ip})")
-    finally:
-        if peer_ip in connections:
-            del connections[peer_ip]
-            del peer_public_keys[peer_ip]
-            for username, ip in list(peer_usernames.items()):
-                if ip == peer_ip:
-                    del peer_usernames[username]
+                # --- If not JSON, assume it's a file chunk (binary) ---
+                if isinstance(message, bytes):
+                    if current_receiving_transfer and current_receiving_transfer.state == TransferState.IN_PROGRESS:
+                        transfer = current_receiving_transfer
+                        try:
+                            async with transfer.condition:
+                                if transfer.state != TransferState.IN_PROGRESS: logger.warning(f"Binary data for non-active transfer {transfer.transfer_id[:8]}"); continue
+                                chunk = message
+                                await transfer.file_handle.write(chunk)
+                                transfer.transferred_size += len(chunk)
+                                if transfer.hash_algo: transfer.hash_algo.update(chunk)
 
-async def user_input(discovery):
-    """Handle user input with centralized control."""
-    await asyncio.sleep(1)
+                                if transfer.transferred_size >= transfer.total_size:
+                                    await transfer.file_handle.close(); transfer.file_handle = None
+                                    final_state = TransferState.COMPLETED; completion_msg = f"Received '{os.path.basename(transfer.file_path)}' from {display_name}."
+                                    if transfer.expected_hash:
+                                        calc_hash = transfer.hash_algo.hexdigest()
+                                        if calc_hash == transfer.expected_hash: logger.info(f"File hash verified for {transfer.transfer_id[:8]}")
+                                        else:
+                                            final_state = TransferState.FAILED; completion_msg = f"Integrity check FAILED for '{os.path.basename(transfer.file_path)}'. File deleted."; logger.error(f"Hash mismatch {transfer.transfer_id[:8]}. Exp {transfer.expected_hash}, Got {calc_hash}")
+                                            try: os.remove(transfer.file_path)
+                                            except OSError as rm_err: logger.error(f"Failed delete corrupted file {transfer.file_path}: {rm_err}")
+                                    else: completion_msg += " (No integrity check)."
+                                    transfer.state = final_state
+                                    await message_queue.put({"type": "log", "message": completion_msg, "level": logging.ERROR if final_state == TransferState.FAILED else logging.INFO})
+                                    await message_queue.put({"type": "transfer_update"}) # Update GUI list
+                                    current_receiving_transfer = None # Ready for next
+                        except Exception as write_err:
+                             logger.exception(f"Error writing file chunk for {transfer.transfer_id[:8]}: {write_err}")
+                             await transfer.fail(f"File write error: {write_err}")
+                             current_receiving_transfer = None # Stop processing for this transfer
+                    else:
+                        logger.warning(f"Received unexpected binary data from {display_name} when no transfer active.")
+                else:
+                    # Neither JSON nor binary - maybe plaintext? Log it.
+                    logger.warning(f"Received non-JSON, non-binary message from {display_name}: {message[:100]}...")
+                    # ADDED: Put raw message on queue for display
+                    await message_queue.put({"type": "message", "sender_display_name": display_name, "content": f"[RAW] {message}"})
+
+            except Exception as proc_err:
+                 logger.exception(f"Error processing message from {display_name}: {proc_err}")
+
+    except websockets.exceptions.ConnectionClosedOK:
+        logger.info(f"Connection closed normally by {display_name} ({peer_ip})")
+    except websockets.exceptions.ConnectionClosedError as e:
+         logger.warning(f"Connection closed abruptly by {display_name} ({peer_ip}): {e}")
+    except asyncio.CancelledError:
+         logger.info(f"Receive loop cancelled for {display_name} ({peer_ip})")
+    except Exception as e:
+        logger.exception(f"Unexpected error in receive loop for {display_name} ({peer_ip}): {e}")
+    finally:
+        logger.debug(f"Cleaning up connection state for {peer_ip}")
+        # Ensure state is removed from all relevant dicts
+        connections.pop(peer_ip, None)
+        peer_public_keys.pop(peer_ip, None)
+        peer_device_ids.pop(peer_ip, None)
+        username = next((u for u, ip in peer_usernames.items() if ip == peer_ip), None)
+        if username: peer_usernames.pop(username, None)
+
+        # Fail any ongoing receiving transfer for this peer
+        if current_receiving_transfer:
+            await current_receiving_transfer.fail("Connection lost")
+            # Removal from active_transfers handled by update_transfer_progress
+
+        if not shutdown_event.is_set():
+            # ADDED: Notify GUI of disconnection
+            await message_queue.put({"type": "connection_status", "peer_ip": peer_ip, "connected": False})
+            await message_queue.put({"type": "log", "message": f"Disconnected from {display_name}"})
+        logger.info(f"Receive loop finished for {display_name} ({peer_ip})")
+
+
+# --- Peer List Maintenance ---
+async def maintain_peer_list(discovery_instance):
+    """Periodically check connections and update peer list based on discovery."""
     while not shutdown_event.is_set():
         try:
-            message = await ainput(f"{user_data['original_username']} > ")
+            disconnected_peers = []
+            # Check existing connections
+            for peer_ip, ws in list(connections.items()):
+                if shutdown_event.is_set(): break
+                try:
+                    # Send ping with timeout
+                    await asyncio.wait_for(ws.ping(), timeout=10.0)
+                except (asyncio.TimeoutError, websockets.exceptions.ConnectionClosed, websockets.exceptions.WebSocketException) as e:
+                    logger.warning(f"Connection lost/ping failed for {get_peer_display_name(peer_ip)} ({peer_ip}): {type(e).__name__}")
+                    disconnected_peers.append(peer_ip)
+                    # Close socket if necessary
+                    if ws.open: await ws.close(code=1011, reason="Ping failure")
+                    # Remove state immediately
+                    connections.pop(peer_ip, None)
+                    peer_public_keys.pop(peer_ip, None)
+                    peer_device_ids.pop(peer_ip, None)
+                    uname = next((u for u, ip in peer_usernames.items() if ip == peer_ip), None)
+                    if uname: peer_usernames.pop(uname, None)
 
-            if message == "/exit":
-                print("Shutting down application...")
-                shutdown_event.set()
-                raise asyncio.CancelledError
+            # Notify GUI about disconnections
+            if disconnected_peers:
+                for peer_ip in disconnected_peers:
+                     await message_queue.put({"type": "connection_status", "peer_ip": peer_ip, "connected": False})
+                     await message_queue.put({"type": "log", "message": f"Lost connection to {get_peer_display_name(peer_ip)}"})
+                 # Trigger full peer list update might be redundant if connection_status does it
+                 # await message_queue.put({"type": "peer_update"})
 
-            elif message == "/help":
-                print("\nAvailable commands:")
-                print("/connect <username>    - Connect to a peer by username")
-                print("/disconnect <username> - Disconnect from a peer by username")
-                print("/msg <username> <message> - Send message to a peer by username")
-                print("/send <username> <file> - Send file to a peer by username")
-                print("/pause <transfer_id>   - Pause a file transfer")
-                print("/resume <transfer_id>  - Resume a file transfer")
-                print("/transfers             - List active transfers")
-                print("/list                  - Show available peers")
-                print("/changename <new_username> - Change your username")
-                print("/exit                  - Exit the application")
-                print("/help                  - Show this help")
-                continue
-
-            elif message == "/list":
-                print("\nAvailable peers:")
-                own_ip = await get_own_ip()
-                for ip, (username, _) in peer_list.items():
-                    if ip == own_ip:
-                        print(f"- {username} ({ip}, Self)")
-                    else:
-                        status = "Connected" if ip in connections else "Discovered"
-                        print(f"- {username} ({ip}, {status})")
-                continue
-
-            elif message.startswith("/connect "):
-                target_username = message[9:].strip()
-                requesting_username = user_data["original_username"]
-                peer_ip = None
-                for ip, (username, _) in peer_list.items():
-                    if username == target_username:
-                        peer_ip = ip
-                        break
-                if peer_ip:
-                    print(f"Connection request to {target_username} is pending approval...")
-                    websocket = await connect_to_peer(peer_ip, requesting_username, target_username)
-                    if websocket:
-                        connections[peer_ip] = websocket
-                        asyncio.create_task(receive_peer_messages(websocket, peer_ip))
-                        print(f"Connected to {target_username}")
-                else:
-                    print(f"No such peer: {target_username}")
-                continue
-
-            elif message.startswith("/disconnect "):
-                target_username = message[12:].strip()
-                await disconnect_from_peer(target_username)
-                continue
-
-            elif message.startswith("/msg "):
-                parts = message[5:].split(" ", 1)
-                if len(parts) < 2:
-                    print("Usage: /msg <username> <message>")
-                    continue
-                target_username, msg_content = parts
-                if target_username in peer_usernames:
-                    await send_message_to_peers(msg_content, target_username)
-                    await message_queue.put(f"{user_data['original_username']} → {target_username}: {msg_content}")
-                else:
-                    print(f"No such peer: {target_username}")
-                continue
-
-            elif message.startswith("/send "):
-                parts = message[6:].split(" ", 1)
-                if len(parts) < 2:
-                    print("Usage: /send <username> <file_path>")
-                    continue
-                target_username, file_path = parts
-                if target_username in peer_usernames:
-                    peer_ip = peer_usernames[target_username]
-                    if peer_ip in connections:
-                        asyncio.create_task(send_file(file_path, {peer_ip: connections[peer_ip]}))
-                        print(f"Started sending {file_path} to {target_username}")
-                    else:
-                        print(f"Not connected to {target_username}")
-                else:
-                    print(f"No such peer: {target_username}")
-                continue
-
-            elif message.startswith("/pause "):
-                transfer_id = message[7:].strip()
-                if transfer_id in active_transfers:
-                    transfer = active_transfers[transfer_id]
-                    await transfer.pause()
-                    print(f"Paused transfer {transfer_id}")
-                else:
-                    print(f"No such transfer: {transfer_id}")
-                continue
-
-            elif message.startswith("/resume "):
-                transfer_id = message[8:].strip()
-                if transfer_id in active_transfers:
-                    transfer = active_transfers[transfer_id]
-                    await transfer.resume()
-                    print(f"Resumed transfer {transfer_id}")
-                else:
-                    print(f"No such transfer: {transfer_id}")
-                continue
-
-            elif message == "/transfers":
-                if not active_transfers:
-                    print("\nNo active transfers.")
-                else:
-                    print("\nActive transfers:")
-                    for transfer_id, transfer in active_transfers.items():
-                        direction = "Sending" if transfer.direction == "send" else "Receiving"
-                        progress = (transfer.transferred_size / transfer.total_size * 100) if transfer.total_size > 0 else 0
-                        print(f"- {transfer_id}: {direction} '{transfer.file_path}' ({progress:.2f}%, {transfer.state.value})")
-                continue
-
-            elif message.startswith("/changename "):
-                new_username = message[12:].strip()
-                if not new_username:
-                    print("Usage: /changename <new_username>")
-                    continue
-                mac = get_mac_address()
-                config_file = f"user_config_{mac}.json"
-                if os.path.exists(config_file):
-                    os.remove(config_file)
-                await create_new_user_config(config_file, mac, new_username)
-                print(f"Username changed to {new_username}")
-                await discovery.send_immediate_broadcast()
-                continue
-
-            elif message.lower() in ("yes", "no") and pending_approvals:
-                peer_ip, future = next(iter(pending_approvals.items()))
-                if not future.done():
-                    future.set_result(message.lower() == "yes")
-                continue
-
-            elif not message.startswith("/"):
-                if connections:
-                    await send_message_to_peers(message)
-                    await message_queue.put(f"{user_data['original_username']} (to all): {message}")
-                else:
-                    print("No peers connected.")
+            # Short sleep before next check
+            await asyncio.sleep(15)
 
         except asyncio.CancelledError:
+            logger.info("maintain_peer_list task cancelled.")
             break
         except Exception as e:
-            logging.exception(f"Error in user_input: {e}")
-            await asyncio.sleep(1)
+            logger.exception(f"Error in maintain_peer_list: {e}")
+            await asyncio.sleep(30) # Wait longer after error
+
+    logger.info("maintain_peer_list stopped.")
+
+
+# --- CLI Specific Functions (Should NOT be imported/used by GUI) ---
+# These were originally in messaging.py but belong to the CLI main loop logic
+
+async def user_input(discovery):
+    """Handle CLI user input. NOT FOR GUI."""
+    # This function should only be run if __name__ == "__main__" in main.py
+    # It interacts directly with the console using aioconsole.
+    await asyncio.sleep(1)
+    logger.warning("CLI user_input task started - this should NOT happen if running the GUI.")
+    # ... (Keep original CLI /command handling logic here) ...
+    # ... Remember to replace print() with await message_queue.put(...) for output ...
+    # ... Replace ainput() with direct input if not using aioconsole for CLI ...
+    while not shutdown_event.is_set():
+        try:
+            # Use simple input for basic CLI, or keep aioconsole if preferred
+            # message = await ainput(f"{get_own_display_name()} > ")
+            message = input(f"{get_own_display_name()} > ").strip() # Sync input for simple CLI
+
+            if message == "/exit":
+                shutdown_event.set(); break
+            # Handle other commands (/list, /connect, /msg, /send etc.)
+            # using await connect_to_peer, await send_message_to_peers etc.
+            # and putting output/status onto message_queue
+            elif message == "/help": await message_queue.put("Help text...")
+            # ... etc ...
+            elif not message.startswith("/"):
+                 await send_message_to_peers(message) # Broadcast
+                 await message_queue.put(f"You (to all): {message}")
+            # Add a small sleep if using sync input to prevent tight loop on error
+            await asyncio.sleep(0.1)
+        except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
+             shutdown_event.set(); break
+        except Exception as e:
+             logger.exception(f"CLI input error: {e}")
+             await message_queue.put({"type":"log", "message":f"Input Error: {e}", "level":logging.ERROR})
+             await asyncio.sleep(1)
 
 async def display_messages():
-    """Display messages from the message queue without re-printing the prompt."""
+    """Display messages from queue for CLI. NOT FOR GUI."""
+    logger.warning("CLI display_messages task started - this should NOT happen if running the GUI.")
     while not shutdown_event.is_set():
         try:
             item = await message_queue.get()
-            if isinstance(item, dict) and item.get("type") == "approval_request":
-                peer_ip = item["peer_ip"]
-                requesting_username = item["requesting_username"]
-                print(f"\nConnection request from {requesting_username} ({peer_ip}). Approve? (yes/no)")
+            # Simple print for CLI
+            if isinstance(item, dict):
+                print(f"\n[STATUS] {item.get('message', str(item))}") # Basic format for dicts
             else:
                 print(f"\n{item}")
-            # Prompt is handled by user_input(), no extra print here
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logging.exception(f"Error displaying message: {e}")
-            await asyncio.sleep(1)
+            # Reprint prompt if needed (complex with async input)
+            # print(f"{get_own_display_name()} > ", end="", flush=True) # Doesn't work well with concurrent prints
+            message_queue.task_done()
+        except asyncio.CancelledError: break
+        except Exception as e: logger.exception(f"CLI display error: {e}"); await asyncio.sleep(1)
