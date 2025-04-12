@@ -4,9 +4,7 @@ import logging
 import sys
 import websockets
 
-# --- Imports needed specifically for handle_peer_connection ---
-# Adjust these imports based on where the functions are *actually* defined
-# (assuming they are now in networking.messaging)
+
 try:
     from networking.messaging import (
         handle_incoming_connection,
