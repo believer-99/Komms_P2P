@@ -1,9 +1,13 @@
+# networking/utils.py
 import socket
 import asyncio
 import logging
-import netifaces 
+import netifaces # For more robust IP detection
+import os # Needed for get_config_directory fallback
 
-
+# --- Import necessary shared state ---
+# Adjust imports based on where these state variables actually live
+# Assuming they are directly in shared_state.py
 try:
     from networking.shared_state import (
         peer_usernames, peer_device_ids, user_data, connections
@@ -49,6 +53,8 @@ async def get_own_ip():
                     if ip and not ip.startswith('127.') and not ip.startswith('169.254.'):
                         logger.debug(f"Determined own IP via netifaces ({interface}): {ip}")
                         return ip
+    except ImportError:
+        logger.debug("netifaces not found, skipping netifaces IP detection.") # Downgrade to debug if netifaces is optional
     except Exception as e:
         logger.warning(f"Error using netifaces: {e}")
 
@@ -69,7 +75,9 @@ async def get_own_ip():
 
 def get_peer_display_name(peer_ip):
     """Return the display name for a peer based on username and device ID."""
-    if not _networking_state_available or not peer_ip: return f"Peer_{peer_ip or 'Unknown'}"
+    if not _networking_state_available or not peer_ip:
+        # Provide a reasonable fallback if state isn't available
+        return f"Peer_{peer_ip or 'Unknown'}"
 
     # Find username associated with the IP
     username = next((uname for uname, ip in peer_usernames.items() if ip == peer_ip), "Unknown")
@@ -80,13 +88,19 @@ def get_peer_display_name(peer_ip):
     needs_suffix = False
     if username != "Unknown":
         count = 0
-        for uname_iter, ip_iter in peer_usernames.items():
-            # Check if connected peer has the same base username
-            if uname_iter == username and ip_iter in connections:
+        # Use a copy of items for potentially safer iteration if connections can change
+        for ip_iter in list(connections.keys()):
+            # Find the username for this connected IP
+            uname_iter = next((u for u, mapped_ip in peer_usernames.items() if mapped_ip == ip_iter), None)
+            if uname_iter == username:
                  count += 1
         # Show suffix if ID exists AND (username is Unknown OR multiple devices are connected)
         if device_suffix and (username == "Unknown" or count > 1):
              needs_suffix = True
+
+    # If username is still Unknown after checks, just return IP or generic Peer_IP
+    if username == "Unknown":
+        return f"Peer_{peer_ip}" # Or return just peer_ip
 
     return f"{username}{device_suffix}" if needs_suffix else username
 
@@ -97,6 +111,7 @@ def get_own_display_name():
     # Assumes user_data is populated by initialize_user_config
     username = user_data.get("original_username", "User")
     device_id = user_data.get("device_id")
+    # Only add device ID if it exists
     return f"{username}({device_id[:8]})" if device_id else username
 
 # Add resolve_peer_target if it was previously in utils and needed by backend triggers
@@ -110,8 +125,11 @@ async def resolve_peer_target(target_identifier):
     if target_identifier in connections: return target_identifier, "found"
 
     matches = []
-  
-    for peer_ip in list(connections.keys()): 
+    # Iterate over connected peers
+    for peer_ip in list(connections.keys()): # Use list copy for safe iteration
+        # Important: Call the potentially blocking get_peer_display_name here
+        # This assumes it's fast enough not to block the event loop significantly.
+        # If it becomes slow, this lookup needs rethinking.
         display_name = get_peer_display_name(peer_ip)
         original_username = next((uname for uname, ip in peer_usernames.items() if ip == peer_ip), None)
 
@@ -125,10 +143,9 @@ async def resolve_peer_target(target_identifier):
     if len(unique_matches) == 1:
         return unique_matches[0], "found"
     elif len(unique_matches) > 1:
-      
+        # Ambiguous if target matches multiple connected base usernames
         return [get_peer_display_name(ip) for ip in unique_matches], "ambiguous"
     else:
-       
         return None, "not_found"
 
 
@@ -137,12 +154,23 @@ def get_config_directory():
        Needed by initialize_user_config.
     """
     try:
+        # Optional dependency: Try importing appdirs
         from appdirs import user_config_dir
-     
+        # Using False for appauthor to avoid extra directory level
         return user_config_dir("P2PChat", False)
     except ImportError:
-        logger.warning("appdirs not found. Using simple '.config' directory.")
-        
+        logger.warning("appdirs not found. Using simple '.config/P2PChat' directory in home folder.")
+        # Basic fallback for Linux/macOS/Windows
         home = os.path.expanduser("~")
-        return os.path.join(home, ".config", "P2PChat")
+        # Use .config for Linux convention, directly in home for others maybe?
+        if sys.platform == "win32":
+            # A slightly better fallback for Windows might be %APPDATA%
+            appdata = os.environ.get('APPDATA')
+            if appdata:
+                return os.path.join(appdata, "P2PChat")
+            else: # Fallback to home if APPDATA not set
+                 return os.path.join(home, ".p2pchat_config") # Use dotfile in home
+        else: # Linux/macOS like
+            return os.path.join(home, ".config", "P2PChat")
+
 
