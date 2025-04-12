@@ -628,17 +628,55 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(dict)
     def update_peer_list_display(self, peers_status):
-        logger.debug(f"Updating network peer list display: {len(peers_status)} peers")
+        # NOTE: The incoming peers_status is assumed to be from the discovery list now:
+        
+
+        logger.debug(f"Updating network peer list display with {len(peers_status)} discovered peers.")
         current_sel_data = self.network_peer_list.currentItem().data(Qt.ItemDataRole.UserRole) if self.network_peer_list.currentItem() else None
         self.network_peer_list.clear(); new_sel_item = None
         own_ip = getattr(self.backend.discovery, 'own_ip', None) if NETWORKING_AVAILABLE and self.backend.discovery else "127.0.0.1"
-        for ip, (username, is_connected) in peers_status.items():
-            if ip == own_ip: continue
-            status = " (Connected)" if is_connected else " (Discovered)"; display_name = get_peer_display_name(ip) if NETWORKING_AVAILABLE else f"Dummy_{username}"
-            item_text = f"{display_name} [{ip}]{status}"; item = QListWidgetItem(item_text); item_data = {"ip": ip, "username": username, "connected": is_connected, "display_name": display_name}; item.setData(Qt.ItemDataRole.UserRole, item_data); self.network_peer_list.addItem(item)
-            if current_sel_data and current_sel_data.get("ip") == ip: new_sel_item = item
+
+        # The keys of peers_status are the IPs from discovery.peer_list
+        for ip, peer_info in peers_status.items():
+            if ip == own_ip: continue # Skip self
+
+            # --- *** MODIFIED LOGIC *** ---
+            discovered_username = peer_info[0] # Get username directly from discovery data
+            is_connected = ip in connections # Check current connection status
+
+            # Determine display name: Use discovery username, add device ID ONLY if connected
+            display_name = discovered_username
+            if is_connected:
+                # If connected, try getting the potentially more complete display name
+                # which might include the device ID suffix if needed.
+                display_name = get_peer_display_name(ip) # Use the function for connected peers
+            elif not discovered_username: # Handle case where discovery somehow had no username
+                 display_name = "Unknown"
+            # --- *** END MODIFIED LOGIC *** ---
+
+            status = " (Connected)" if is_connected else " (Discovered)"
+            item_text = f"{display_name} [{ip}]{status}"
+            item = QListWidgetItem(item_text)
+            # Store consistent data for actions
+            item_data = {"ip": ip, "username": discovered_username, "connected": is_connected, "display_name": display_name}
+            item.setData(Qt.ItemDataRole.UserRole, item_data)
+            self.network_peer_list.addItem(item)
+
+            # Reselection logic
+            if current_sel_data and current_sel_data.get("ip") == ip:
+                new_sel_item = item
+
+        if not peers_status: # Add placeholder if list is empty (after filtering self)
+             item = QListWidgetItem("No other peers discovered")
+             item.setForeground(QColor("#888"))
+             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+             self.network_peer_list.addItem(item)
+
         if new_sel_item: self.network_peer_list.setCurrentItem(new_sel_item)
-        else: self.on_network_peer_selection_changed(None, None)
+        else: self.on_network_peer_selection_changed(None, None) # Clear selection effects
+
+        # NOTE: We still call update_chat_peer_list here, which correctly
+        # only adds currently *connected* peers based on the `connections` dict.
         self.update_chat_peer_list()
 
     def update_chat_peer_list(self):
