@@ -1,4 +1,3 @@
-# networking/messaging.py
 import asyncio
 import logging
 import websockets
@@ -16,7 +15,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from appdirs import user_config_dir
 from websockets.connection import State
 
-# MODIFIED: Import from local modules/shared state
+
 from networking.utils import get_own_ip
 from networking.shared_state import (
     active_transfers, message_queue, connections, user_data, peer_public_keys,
@@ -24,24 +23,23 @@ from networking.shared_state import (
     pending_join_requests, pending_approvals, connection_denials
 )
 from networking.file_transfer import FileTransfer, TransferState, compute_hash
-# Group function imports (assuming they exist)
-# Assuming groups.py exists directly under networking now
+
 from networking.groups import (
      send_group_create_message, send_group_invite_message, send_group_invite_response,
      send_group_join_request, send_group_join_response, send_group_update_message
 )
-# Utility function imports
+
 from networking.utils import get_peer_display_name, get_own_display_name
 
 logger = logging.getLogger(__name__)
 
-# --- Configuration ---
+
 def get_config_directory():
     """Determine the appropriate config directory based on the OS."""
     try:
-        # Optional dependency: Try importing appdirs
+
         from appdirs import user_config_dir
-        # Using False for appauthor to avoid extra directory level
+
         return user_config_dir("P2PChat", False)
     except ImportError:
         logger.warning("appdirs not found. Using simple '.config/P2PChat' directory in home folder.")
@@ -73,17 +71,17 @@ async def initialize_user_config():
         except Exception as e:
             logger.error(f"Error loading config: {e}. Creating new one.")
             await message_queue.put({"type": "log", "message": f"Config error: {e}. Creating new config."})
-            await create_new_user_config(config_file_path, user_data.get("original_username")) # Pass potential username
+            await create_new_user_config(config_file_path, user_data.get("original_username"))
     else:
         logger.info("No config file found, creating new one.")
-        await create_new_user_config(config_file_path, user_data.get("original_username")) # Pass potential username
+        await create_new_user_config(config_file_path, user_data.get("original_username"))
         await message_queue.put({"type": "log", "message": f"Welcome, {get_own_display_name()}! Config created."})
 
 async def create_new_user_config(config_file_path, provided_username=None):
     """Create a new user configuration file. Called by initialize_user_config."""
     if not provided_username:
-        # This needs to be handled differently if run without GUI interaction
-        # For GUI mode, LoginWindow should have set it.
+
+
         logger.critical("Username not set in user_data before config creation attempt.")
         await message_queue.put({"type": "log", "message": "FATAL: Username not available for config creation.", "level": logging.CRITICAL})
         raise ValueError("Username required for new config creation")
@@ -106,10 +104,9 @@ async def create_new_user_config(config_file_path, provided_username=None):
     except IOError as e:
         logger.exception(f"FATAL: Could not write config file {config_file_path}: {e}")
         await message_queue.put({"type": "log", "message": f"FATAL: Cannot write config file: {e}", "level": logging.CRITICAL})
-        raise # Re-raise fatal error
+        raise
 
 
-# --- Connection Handling ---
 async def connect_to_peer(peer_ip, requesting_username, target_username, port=8765):
     """Establish a WebSocket connection to a peer. Called by Backend."""
     if peer_ip in connections:
@@ -166,7 +163,7 @@ async def disconnect_from_peer(peer_ip):
     username_to_remove = next((uname for uname, ip_addr in peer_usernames.items() if ip_addr == peer_ip), None)
     if username_to_remove: peer_usernames.pop(username_to_remove, None)
     closed_successfully = False
-    # Use .state check here as well
+
     if websocket and websocket.state == State.OPEN:
         try: await websocket.close(code=1000, reason="User initiated disconnect"); logger.info(f"Closed connection to {display_name} ({peer_ip})"); closed_successfully = True
         except Exception as e: logger.error(f"Error closing connection to {peer_ip}: {e}")
@@ -182,7 +179,7 @@ async def handle_incoming_connection(websocket, peer_ip):
     approved = False; requesting_display_name = f"Peer@{peer_ip}"
     requesting_username = "Unknown"; approval_key = None
     try:
-        # Use wait_for instead of timeout for compatibility
+
         init_message = await asyncio.wait_for(websocket.recv(), timeout=30.0)
         if shutdown_event.is_set(): await websocket.close(1001); return False
         if not isinstance(init_message, str) or not init_message.startswith("INIT "): raise ValueError("Invalid INIT message")
@@ -237,7 +234,7 @@ async def handle_incoming_connection(websocket, peer_ip):
         if approval_key and approval_key in pending_approvals: pending_approvals.pop(approval_key, None)
         return False
 
-# --- Message Sending/Receiving ---
+
 async def send_message_to_peers(message, target_peer_ip=None):
     """Send an encrypted message to one or all connected peers. Called by Backend."""
     if not isinstance(message, str) or not message: logger.warning("Attempted send empty message."); return False
@@ -273,7 +270,7 @@ async def receive_peer_messages(websocket, peer_ip):
             if shutdown_event.is_set(): break
             is_binary = isinstance(message, bytes)
 
-            # --- Prioritize Binary Chunk Handling ---
+
             if is_binary and current_receiving_transfer and current_receiving_transfer.state == TransferState.IN_PROGRESS:
                 transfer = current_receiving_transfer
                 try:
@@ -289,7 +286,7 @@ async def receive_peer_messages(websocket, peer_ip):
                                 if calc_hash == transfer.expected_hash:
                                     logger.info(f"Hash verified for {transfer.transfer_id[:8]}")
                                 else:
-                                   
+
                                     final_state = TransferState.FAILED
                                     completion_msg = f"Hash FAILED '{os.path.basename(transfer.file_path)}'. Deleted."
                                     logger.error(f"Hash mismatch {transfer.transfer_id[:8]}. Exp {transfer.expected_hash}, Got {calc_hash}")
@@ -298,14 +295,14 @@ async def receive_peer_messages(websocket, peer_ip):
                                         logger.info(f"Deleted corrupted file: {transfer.file_path}")
                                     except OSError as rm_err:
                                          logger.error(f"Failed delete corrupted file {transfer.file_path}: {rm_err}")
-                                    # --- *** END CORRECTED BLOCK *** ---
+
                             else:
                                 completion_msg += " (No hash check)."
                             await message_queue.put({"type":"log","message":msg,"level": logging.ERROR if final_state==TransferState.FAILED else logging.INFO})
                             await message_queue.put({"type": "transfer_update"}); current_receiving_transfer = None
                 except Exception as write_err: logger.exception(f"Err writing chunk {transfer.transfer_id[:8]}: {write_err}"); await transfer.fail(f"Write err: {write_err}"); current_receiving_transfer = None
 
-            # --- Handle JSON Messages ---
+
             elif not is_binary:
                 try:
                     data = json.loads(message); msg_type = data.get("type"); logger.debug(f"JSON recv from {display_name}: type={msg_type}")
@@ -315,7 +312,7 @@ async def receive_peer_messages(websocket, peer_ip):
                     elif msg_type == "file_transfer_init":
                         if current_receiving_transfer: logger.warning(f"New transfer init overriding active {current_receiving_transfer.transfer_id[:8]}"); await current_receiving_transfer.fail("Superseded")
                         tid=data["transfer_id"]; fname=data["filename"]; fsize=data["filesize"]; fhash=data.get("file_hash"); path=os.path.join("downloads", os.path.basename(fname)); os.makedirs("downloads", exist_ok=True)
-                        counter=1; base, ext = os.path.splitext(path); 
+                        counter=1; base, ext = os.path.splitext(path);
                         while os.path.exists(path): path=f"{base}({counter}){ext}"; counter += 1
                         transfer = FileTransfer(path, peer_ip, "receive", tid); transfer.total_size=fsize; transfer.expected_hash=fhash; transfer.state=TransferState.IN_PROGRESS
                         try: transfer.file_handle = await aiofiles.open(path, "wb"); active_transfers[tid] = transfer; current_receiving_transfer = transfer; logger.info(f"Receiving '{os.path.basename(path)}' ({tid[:8]}) from {display_name}"); await message_queue.put({"type":"transfer_update"}); await message_queue.put({"type":"log", "message":f"Receiving '{os.path.basename(path)}' from {display_name} (ID: {tid[:8]})"})
@@ -324,40 +321,40 @@ async def receive_peer_messages(websocket, peer_ip):
                     if transfer and transfer.peer_ip == peer_ip and transfer.state == TransferState.IN_PROGRESS: await transfer.pause(); await message_queue.put({"type":"log","message":f"{display_name} paused {tid[:8]}"})
                     elif msg_type == "TRANSFER_RESUME": tid=data.get("transfer_id"); transfer=active_transfers.get(tid);
                     if transfer and transfer.peer_ip == peer_ip and transfer.state == TransferState.PAUSED: await transfer.resume(); await message_queue.put({"type":"log","message":f"{display_name} resumed {tid[:8]}"})
-                    # --- Handle GROUP Messages ---
+
                     elif msg_type == "GROUP_CREATE": groups[data["groupname"]] = {"admin":data["admin_ip"],"members":{data["admin_ip"]}}; await message_queue.put({"type":"group_list_update"}); await message_queue.put({"type":"log","message":f"Group '{data['groupname']}' created by {get_peer_display_name(data['admin_ip'])}"})
                     elif msg_type == "GROUP_INVITE": pending_invites.append(data); await message_queue.put({"type":"pending_invites_update"}); await message_queue.put({"type":"log","message":f"Invite to join '{data['groupname']}' from {get_peer_display_name(data['inviter_ip'])}"})
-                    elif msg_type == "GROUP_INVITE_RESPONSE": # Received by admin
+                    elif msg_type == "GROUP_INVITE_RESPONSE":
                          gn=data["groupname"]; invitee=data["invitee_ip"]; accepted=data["accepted"]
                          if gn in groups and groups[gn]["admin"] == await get_own_ip():
                               if accepted: groups[gn]["members"].add(invitee); await send_group_update_message(gn, list(groups[gn]["members"])); await message_queue.put({"type":"log","message":f"{get_peer_display_name(invitee)} joined '{gn}'"})
                               else: await message_queue.put({"type":"log","message":f"{get_peer_display_name(invitee)} declined invite to '{gn}'"})
                          else: logger.warning("Received invite response for group not admin of.")
-                    elif msg_type == "GROUP_JOIN_REQUEST": # Received by admin
+                    elif msg_type == "GROUP_JOIN_REQUEST":
                          gn=data["groupname"]; req_ip=data["requester_ip"]; req_uname=data["requester_username"]
                          if gn in groups and groups[gn]["admin"] == await get_own_ip():
                               if not any(r["requester_ip"] == req_ip for r in pending_join_requests[gn]): pending_join_requests[gn].append({"requester_ip":req_ip,"requester_username":req_uname}); await message_queue.put({"type":"join_requests_update"}); await message_queue.put({"type":"log","message":f"Join request for '{gn}' from {req_uname}"})
                               else: logger.info(f"Duplicate join request ignored for {gn} from {req_uname}")
                          else: logger.warning("Received join request for group not admin of.")
-                    elif msg_type == "GROUP_JOIN_RESPONSE": # Received by requester
+                    elif msg_type == "GROUP_JOIN_RESPONSE":
                          gn=data["groupname"]; req_ip=data["requester_ip"]; approved=data["approved"]; admin_ip=data["admin_ip"]
                          if req_ip == await get_own_ip():
                               if approved: groups[gn] = {"admin":admin_ip,"members":{admin_ip, req_ip}}; await message_queue.put({"type":"group_list_update"}); await message_queue.put({"type":"log","message":f"Join request for '{gn}' approved."})
                               else: await message_queue.put({"type":"log","message":f"Join request for '{gn}' denied."})
                          else: logger.warning("Received join response for someone else.")
-                    elif msg_type == "GROUP_UPDATE": # Received by members
+                    elif msg_type == "GROUP_UPDATE":
                          gn=data["groupname"]; members=set(data["members"]); admin=data["admin"]
-                         if await get_own_ip() in members: # Update if still a member
+                         if await get_own_ip() in members:
                               if gn not in groups: logger.warning(f"GROUP_UPDATE for unknown group {gn}. Adding."); groups[gn]={"admin":admin,"members":members}
-                              else: groups[gn]["members"] = members; groups[gn]["admin"] = admin # Update members and admin
+                              else: groups[gn]["members"] = members; groups[gn]["admin"] = admin
                               await message_queue.put({"type":"group_list_update"}); await message_queue.put({"type":"log","message":f"Group '{gn}' updated."})
-                         elif gn in groups: # Removed from group
+                         elif gn in groups:
                               del groups[gn]; await message_queue.put({"type":"group_list_update"}); await message_queue.put({"type":"log","message":f"Removed from group '{gn}'."})
                     else: logger.warning(f"Unknown JSON type '{msg_type}' from {display_name}")
                 except json.JSONDecodeError: logger.warning(f"Recv non-JSON from {display_name}: {message[:100]}..."); await message_queue.put({"type":"message","sender_display_name":display_name,"content":f"[INVALID JSON] {message[:100]}..."})
                 except Exception as proc_err: logger.exception(f"Error processing JSON msg from {display_name}: {proc_err}")
 
-            # --- Handle unexpected binary ---
+
             elif is_binary: logger.warning(f"Unexpected binary data from {display_name}")
 
     except websockets.exceptions.ConnectionClosedOK: logger.info(f"Conn closed normally by {display_name} ({peer_ip})")
@@ -375,7 +372,7 @@ async def receive_peer_messages(websocket, peer_ip):
             await message_queue.put({"type": "log", "message": f"Disconnected from {display_name}"})
         logger.info(f"Receive loop finished for {display_name} ({peer_ip})")
 
-# --- Peer List Maintenance ---
+
 async def maintain_peer_list(discovery_instance):
     """Periodically check connections and update peer list based on discovery."""
     while not shutdown_event.is_set():
@@ -388,7 +385,7 @@ async def maintain_peer_list(discovery_instance):
                 except (asyncio.TimeoutError, websockets.exceptions.ConnectionClosed, websockets.exceptions.WebSocketException) as e:
                     logger.warning(f"Connection lost/ping failed for {get_peer_display_name(peer_ip)} ({peer_ip}): {type(e).__name__}")
                     disconnected_peers.append(peer_ip)
-                    # Use state check before closing
+
                     if ws.state == State.OPEN: await ws.close(code=1011, reason="Ping failure")
                     connections.pop(peer_ip, None); peer_public_keys.pop(peer_ip, None); peer_device_ids.pop(peer_ip, None)
                     uname = next((u for u, ip in peer_usernames.items() if ip == peer_ip), None)
@@ -402,6 +399,6 @@ async def maintain_peer_list(discovery_instance):
         except Exception as e: logger.exception(f"Error in maintain_peer_list: {e}"); await asyncio.sleep(30)
     logger.info("maintain_peer_list stopped.")
 
-# --- CLI Specific Functions (Should be removed or guarded if this file is imported) ---
+
 async def user_input(discovery): logger.critical("CLI user_input task running - should not happen in GUI mode!"); await asyncio.sleep(3600)
 async def display_messages(): logger.critical("CLI display_messages task running - should not happen in GUI mode!"); await asyncio.sleep(3600)
