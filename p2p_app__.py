@@ -567,6 +567,7 @@ class MainWindow(QMainWindow):
         super().__init__(); self.username = username; self.current_chat_peer_username = None; self.chat_widgets = {}; self.chat_histories = defaultdict(list); logger.info("MainWindow: Initializing Backend and NetworkingThread..."); self.backend = Backend(); self.network_thread = NetworkingThread(self.backend); logger.info("MainWindow: Backend and NetworkingThread initialized.")
         # Username already set in LoginWindow
         own_display_name = get_own_display_name() if NETWORKING_AVAILABLE else f"{self.username}(dummy)"; self.setWindowTitle(f"P2P Chat - {own_display_name}"); self.setGeometry(100, 100, 1100, 800); self.selected_file = None
+        self.transfer_progress_cache = {} 
         self.central_widget = QWidget(); self.setCentralWidget(self.central_widget); main_layout = QVBoxLayout(self.central_widget); main_layout.setContentsMargins(0, 0, 0, 0); main_layout.setSpacing(0)
         self.tab_widget = QTabWidget(); self.chat_tab = QWidget(); self.transfers_tab = QWidget(); self.peers_tab = QWidget(); self.groups_tab = QWidget()
         self.tab_widget.addTab(self.chat_tab, "Chat"); self.tab_widget.addTab(self.transfers_tab, "Transfers"); self.tab_widget.addTab(self.peers_tab, "Network Peers"); self.tab_widget.addTab(self.groups_tab, "Groups")
@@ -656,31 +657,94 @@ class MainWindow(QMainWindow):
               self.current_chat_peer_username = None; self.chat_stack.setCurrentWidget(self.no_chat_selected_widget)
 
     @pyqtSlot(dict)
+       
     def update_transfer_list_display(self, transfers_info):
-        logger.debug("Updating transfer list display."); current_sel_id = self.transfer_list.currentItem().data(Qt.ItemDataRole.UserRole) if self.transfer_list.currentItem() else None; self.transfer_list.clear(); new_sel_item = None
-        if not transfers_info: item = QListWidgetItem("No active transfers"); item.setForeground(QColor("#888")); item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable); self.transfer_list.addItem(item)
+        logger.debug(f"Updating transfer list display with {len(transfers_info)} items.")
+        current_sel_id = self.transfer_list.currentItem().data(Qt.ItemDataRole.UserRole) if self.transfer_list.currentItem() else None
+        self.transfer_list.clear(); new_sel_item = None
+
+        # Keep track of current IDs to clean cache later
+        current_transfer_ids = set(transfers_info.keys()) # Define this at the start of the method
+
+        if not transfers_info:
+            item = QListWidgetItem("No active transfers"); item.setForeground(QColor("#888")); item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable); self.transfer_list.addItem(item)
         else:
             for tid, t_info in transfers_info.items():
-                file_name = os.path.basename(t_info.get('file_path', 'Unk')); state = t_info.get('state', 'Unk'); progress = t_info.get('progress', 0); direction = t_info.get('direction', '??'); peer_ip = t_info.get('peer_ip', '??'); peer_name = get_peer_display_name(peer_ip) if NETWORKING_AVAILABLE else f"P_{peer_ip}"; direction_symbol = "⬆️" if direction == "send" else "⬇️"
-                item_text = f"{direction_symbol} {file_name} ({peer_name}) - {state} [{progress}%]"; item = QListWidgetItem(item_text); item.setData(Qt.ItemDataRole.UserRole, tid); self.transfer_list.addItem(item)
+                progress = t_info.get('progress', 0)
+                self.transfer_progress_cache[tid] = progress # Update cache
+
+                file_name = os.path.basename(t_info.get('file_path', 'Unk')); state = t_info.get('state', 'Unk'); direction = t_info.get('direction', '??'); peer_ip = t_info.get('peer_ip', '??'); peer_name = get_peer_display_name(peer_ip) if NETWORKING_AVAILABLE else f"P_{peer_ip}"; direction_symbol = "⬆️" if direction == "send" else "⬇️"
+                item_text = f"{direction_symbol} {file_name} ({peer_name}) - {state} [{progress}%]" # Use updated progress
+                item = QListWidgetItem(item_text); item.setData(Qt.ItemDataRole.UserRole, tid); self.transfer_list.addItem(item)
                 if tid == current_sel_id: new_sel_item = item
+
             if new_sel_item: self.transfer_list.setCurrentItem(new_sel_item)
+
+        # --- Correctly Indented Cache Cleanup ---
+        cached_ids = list(self.transfer_progress_cache.keys())
+        for tid in cached_ids:
+            if tid not in current_transfer_ids:
+                # Safely delete from cache
+                try:
+                    del self.transfer_progress_cache[tid]
+                    logger.debug(f"Removed transfer {tid} from progress cache.")
+                except KeyError:
+                    logger.warning(f"Attempted to remove non-existent key {tid} from progress cache.")
+
+        # --- Correctly Indented Call ---
+        # Update buttons/progress bar based on current selection (which might have changed)
         self.on_transfer_selection_changed(self.transfer_list.currentItem(), None)
+    
 
     @pyqtSlot(str, int)
     def update_transfer_progress_display(self, transfer_id, progress):
-         current_item = self.transfer_list.currentItem()
-         if current_item and current_item.data(Qt.ItemDataRole.UserRole) == transfer_id: self.progress_bar.setValue(progress)
+     """Updates the cache and the progress bar if the item is selected."""
+     # Always update the cache with the latest progress
+     self.transfer_progress_cache[transfer_id] = progress
+
+     # Update the visible progress bar ONLY if this transfer is selected
+     current_item = self.transfer_list.currentItem()
+     if current_item and current_item.data(Qt.ItemDataRole.UserRole) == transfer_id:
+          self.progress_bar.setValue(progress)
 
     def _append_message_to_history(self, history_widget, sender, message):
         timestamp = time.strftime("%H:%M:%S"); formatted_message = f'<span style="color:#aaa;">[{timestamp}]</span> <b>{sender}:</b> {message}'; history_widget.append(formatted_message); history_widget.moveCursor(QTextCursor.MoveOperation.End)
 
     @pyqtSlot(str, str)
     def display_received_message(self, sender_display_name, message):
-        base_sender = sender_display_name.split("(")[0]; self.create_chat_widget(base_sender); self.chat_histories[base_sender].append((sender_display_name, message)); history_widget = self.chat_widgets[base_sender]['history']; self._append_message_to_history(history_widget, sender_display_name, message)
-        if self.current_chat_peer_username != base_sender: items = self.chat_peer_list.findItems(base_sender, Qt.MatchFlag.MatchExactly); # Find by base username
-        if items: font = items[0].font(); font.setBold(True); items[0].setFont(font)
+        """Displays a received message in the correct chat window."""
+        # Extract base username robustly
+        base_sender_username = sender_display_name
+        if "(" in sender_display_name and sender_display_name.endswith(")"):
+            base_sender_username = sender_display_name[:sender_display_name.rfind("(")]
 
+        logger.debug(f"Attempting to display message from {sender_display_name} (base: {base_sender_username})")
+
+        # Ensure chat widget exists (might receive message before selecting chat)
+        self.create_chat_widget(base_sender_username) # Creates if not exists
+
+        # Check if widget was actually created/exists before proceeding
+        if base_sender_username in self.chat_widgets:
+            # Append to persistent history
+            self.chat_histories[base_sender_username].append((sender_display_name, message))
+
+            # Append to UI widget
+            history_widget = self.chat_widgets[base_sender_username]['history']
+            self._append_message_to_history(history_widget, sender_display_name, message)
+
+            # Indicate unread if not the current chat
+            if self.current_chat_peer_username != base_sender_username:
+                 # Find item using the base username stored in its UserRole data
+                 for i in range(self.chat_peer_list.count()):
+                      item = self.chat_peer_list.item(i)
+                      if item.data(Qt.ItemDataRole.UserRole) == base_sender_username:
+                           font = item.font()
+                           font.setBold(True)
+                           item.setFont(font)
+                           break # Found the item
+        else:
+            logger.error(f"Failed to find or create chat widget for base username: {base_sender_username} from display name: {sender_display_name}")
+            self.update_status_bar(f"Error displaying message from {sender_display_name}")
     def display_sent_message(self, recipient_username, message):
         own_name = get_own_display_name() if NETWORKING_AVAILABLE else f"{self.username}(You)"; self.chat_histories[recipient_username].append((own_name, message))
         if recipient_username in self.chat_widgets: history_widget = self.chat_widgets[recipient_username]['history']; self._append_message_to_history(history_widget, own_name, message)
@@ -803,18 +867,26 @@ class MainWindow(QMainWindow):
         self.disconnect_button.setEnabled(can_disconnect)
         self.send_file_button.setEnabled(can_send_file)
     def on_transfer_selection_changed(self, current, previous):
-        can_pause = False; can_resume = False; progress = 0
-        if current:
-            transfer_id = current.data(Qt.ItemDataRole.UserRole); state_value = "Unknown"; transfer_obj = None
-            if NETWORKING_AVAILABLE and transfer_id in active_transfers: transfer_obj = active_transfers[transfer_id]
-            elif not NETWORKING_AVAILABLE and transfer_id in active_transfers: transfer_obj = active_transfers[transfer_id]
-            if transfer_obj:
-                 state_value = getattr(getattr(transfer_obj, 'state', None), 'value', 'Unknown'); total_s = getattr(transfer_obj, 'total_size', 0); trans_s = getattr(transfer_obj, 'transferred_size', 0)
-                 progress = int((trans_s / total_s) * 100) if total_s > 0 else 0
-                 can_pause = state_value == (TransferState.IN_PROGRESS.value if NETWORKING_AVAILABLE else "Sending")
-                 can_resume = state_value == (TransferState.PAUSED.value if NETWORKING_AVAILABLE else "Paused")
-        self.pause_button.setEnabled(can_pause); self.resume_button.setEnabled(can_resume); self.progress_bar.setValue(progress)
+    
+      can_pause = False; can_resume = False; progress = 0
+      if current:
+        transfer_id = current.data(Qt.ItemDataRole.UserRole)
+        # Get state from active_transfers (needed for button state)
+        state_value = "Unknown"; transfer_obj = None
+        if NETWORKING_AVAILABLE and transfer_id in active_transfers: transfer_obj = active_transfers[transfer_id]
+        elif not NETWORKING_AVAILABLE and transfer_id in active_transfers: transfer_obj = active_transfers[transfer_id] # Dummy
 
+        if transfer_obj:
+             state_value = getattr(getattr(transfer_obj, 'state', None), 'value', 'Unknown')
+             can_pause = state_value == (TransferState.IN_PROGRESS.value if NETWORKING_AVAILABLE else "Sending")
+             can_resume = state_value == (TransferState.PAUSED.value if NETWORKING_AVAILABLE else "Paused")
+
+        # *** Get progress from the cache ***
+        progress = self.transfer_progress_cache.get(transfer_id, 0) # Default to 0 if not found
+
+      self.pause_button.setEnabled(can_pause)
+      self.resume_button.setEnabled(can_resume)
+      self.progress_bar.setValue(progress) # Set bar from cache
     # --- Action Methods with Corrected Indentation --- #
     def connect_to_selected_peer(self):
         selected_item = self.network_peer_list.currentItem()
@@ -963,7 +1035,6 @@ if __name__ == "__main__":
     exit_code = app.exec()
     logger.info(f"Application exiting with code {exit_code}")
     shutdown_event.set() # Ensure shutdown is signalled on exit
-    # Allow some time for threads to potentially clean up - adjust as needed
-    # This is a basic approach; a more robust shutdown waits for thread signals.
+   
     time.sleep(0.5)
     sys.exit(exit_code)
