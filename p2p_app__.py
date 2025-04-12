@@ -962,6 +962,8 @@ if __name__ == "__main__":
     login_window.show()
     exit_code = app.exec()
     logger.info(f"Application exiting with code {exit_code}")
-    shutdown_event.set() #
+    shutdown_event.set() # Ensure shutdown is signalled on exit
+    # Allow some time for threads to potentially clean up - adjust as needed
+    # This is a basic approach; a more robust shutdown waits for thread signals.
     time.sleep(0.5)
     sys.exit(exit_code)
