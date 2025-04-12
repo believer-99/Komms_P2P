@@ -1,4 +1,3 @@
-# p2p_app__.py
 import asyncio
 import json
 import logging
@@ -14,7 +13,6 @@ from collections import defaultdict # For chat histories
 from PyQt6.QtCore import QEvent # Ensure QEvent is imported
 import threading # Make sure threading is imported
 
-# --- Cryptography Imports ---
 try:
     from cryptography.hazmat.primitives import serialization, hashes
     from cryptography.hazmat.primitives.asymmetric import rsa, padding
@@ -605,13 +603,93 @@ class MainWindow(QMainWindow):
         layout=QHBoxLayout(self.chat_tab);layout.setContentsMargins(0,0,0,0);layout.setSpacing(0);splitter=QSplitter(Qt.Orientation.Horizontal);layout.addWidget(splitter);self.chat_peer_list=QListWidget();self.chat_peer_list.setObjectName("chat_peer_list");self.chat_peer_list.setFixedWidth(250);self.chat_peer_list.currentItemChanged.connect(self.on_chat_peer_selected);splitter.addWidget(self.chat_peer_list);right_pane_widget=QWidget();right_pane_layout=QVBoxLayout(right_pane_widget);right_pane_layout.setContentsMargins(10,10,10,10);right_pane_layout.setSpacing(10);self.chat_stack=QStackedWidget();right_pane_layout.addWidget(self.chat_stack,1);self.no_chat_selected_widget=QLabel("Select a peer to start chatting.");self.no_chat_selected_widget.setAlignment(Qt.AlignmentFlag.AlignCenter);self.no_chat_selected_widget.setStyleSheet("color: #888;");self.chat_stack.addWidget(self.no_chat_selected_widget);splitter.addWidget(right_pane_widget);splitter.setSizes([250,750]);self.update_chat_peer_list()
 
     def create_chat_widget(self, peer_username):
-        if peer_username in self.chat_widgets: return self.chat_widgets[peer_username]['widget']; chat_widget=QWidget();layout=QVBoxLayout(chat_widget);layout.setContentsMargins(0,0,0,0);layout.setSpacing(10);history=QTextEdit();history.setReadOnly(True);history.setObjectName(f"chat_history_{peer_username}");layout.addWidget(history,1);input_layout=QHBoxLayout();input_layout.setSpacing(5);msg_input=QLineEdit();msg_input.setPlaceholderText(f"Message {peer_username}...");msg_input.setObjectName(f"chat_input_{peer_username}");send_btn=QPushButton();send_btn.setObjectName("chat_send_button");send_btn.setIcon(QIcon.fromTheme("mail-send",QIcon("./icons/send.png")));send_btn.setFixedSize(QSize(32,32));send_btn.setIconSize(QSize(20,20));send_btn.setToolTip(f"Send message to {peer_username}");input_layout.addWidget(msg_input);input_layout.addWidget(send_btn);layout.addLayout(input_layout);send_btn.clicked.connect(lambda: self.send_chat_message(peer_username));msg_input.returnPressed.connect(lambda: self.send_chat_message(peer_username));self.chat_widgets[peer_username]={'widget':chat_widget,'history':history,'input':msg_input,'send_btn':send_btn};history.clear();[self._append_message_to_history(history,s,c) for s,c in self.chat_histories.get(peer_username,[])];return chat_widget
+        if peer_username in self.chat_widgets:
+            # logger.debug(f"Chat widget already exists for {peer_username}") # Optional debug
+            return self.chat_widgets[peer_username]['widget']
 
+        logger.info(f"Creating chat widget for {peer_username}")
+        try:
+            chat_widget = QWidget()
+            layout = QVBoxLayout(chat_widget); layout.setContentsMargins(0,0,0,0); layout.setSpacing(10)
+
+            logger.debug(f"Creating history QTextEdit for {peer_username}")
+            history = QTextEdit(); history.setReadOnly(True); history.setObjectName(f"chat_history_{peer_username}")
+            layout.addWidget(history, 1)
+
+            input_layout = QHBoxLayout(); input_layout.setSpacing(5)
+            logger.debug(f"Creating input QLineEdit for {peer_username}")
+            msg_input = QLineEdit(); msg_input.setPlaceholderText(f"Message {peer_username}..."); msg_input.setObjectName(f"chat_input_{peer_username}")
+
+            logger.debug(f"Creating send QPushButton for {peer_username}")
+            send_btn = QPushButton(); send_btn.setObjectName("chat_send_button"); send_btn.setIcon(QIcon.fromTheme("mail-send", QIcon("./icons/send.png"))); send_btn.setFixedSize(QSize(32,32)); send_btn.setIconSize(QSize(20,20)); send_btn.setToolTip(f"Send message to {peer_username}")
+
+            input_layout.addWidget(msg_input); input_layout.addWidget(send_btn); layout.addLayout(input_layout)
+
+            logger.debug(f"Connecting signals for {peer_username}")
+            send_btn.clicked.connect(lambda: self.send_chat_message(peer_username))
+            msg_input.returnPressed.connect(lambda: self.send_chat_message(peer_username))
+
+            # Store widget references BEFORE populating history
+            self.chat_widgets[peer_username]={'widget':chat_widget,'history':history,'input':msg_input,'send_btn':send_btn}
+
+            # Populate history *after* adding to dict
+            logger.debug(f"Populating history for {peer_username}")
+            history.clear()
+            # Use try-except during history population as well
+            try:
+                 for msg_sender, msg_content in self.chat_histories.get(peer_username,[]):
+                     self._append_message_to_history(history, msg_sender, msg_content)
+            except Exception as hist_err:
+                 logger.error(f"Error populating history for {peer_username}: {hist_err}")
+
+            logger.info(f"Successfully created chat widget for {peer_username}")
+            return chat_widget
+
+        except Exception as e:
+             # Log any exception during widget creation
+             logger.exception(f"CRITICAL ERROR creating chat widget for {peer_username}: {e}")
+             # Remove potentially partially created entry if error occurred
+             if peer_username in self.chat_widgets:
+                 del self.chat_widgets[peer_username]
+             return None # Indicate failure
     def on_chat_peer_selected(self, current, previous):
-        if current: peer_username=current.data(Qt.ItemDataRole.UserRole);self.current_chat_peer_username=peer_username;logger.info(f"Chat peer selected: {peer_username}");widget_to_show=self.create_chat_widget(peer_username);
-        if self.chat_stack.indexOf(widget_to_show)<0:self.chat_stack.addWidget(widget_to_show);self.chat_stack.setCurrentWidget(widget_to_show);font=current.font();
-        if font.bold():font.setBold(False);current.setFont(font)
-        else: self.current_chat_peer_username=None;self.chat_stack.setCurrentWidget(self.no_chat_selected_widget)
+        if current:
+            peer_username = current.data(Qt.ItemDataRole.UserRole)
+            # Ensure peer_username is valid before proceeding
+            if not peer_username:
+                logger.error("Selected chat item has invalid data.")
+                self.current_chat_peer_username = None
+                self.chat_stack.setCurrentWidget(self.no_chat_selected_widget)
+                return
+
+            self.current_chat_peer_username = peer_username
+            logger.info(f"Chat peer selected: {peer_username}")
+
+            # Get or create the widget
+            widget_to_show = self.create_chat_widget(peer_username) # Creates if needed
+
+            # Add widget to stack *only if* it's not already there
+            if widget_to_show and self.chat_stack.indexOf(widget_to_show) < 0:
+                self.chat_stack.addWidget(widget_to_show)
+
+            # Set current widget (use placeholder if creation failed)
+            if widget_to_show:
+                 self.chat_stack.setCurrentWidget(widget_to_show)
+                 # Give focus to the input field when chat is selected
+                 if peer_username in self.chat_widgets:
+                     self.chat_widgets[peer_username]['input'].setFocus()
+            else:
+                 logger.error(f"Could not get or create chat widget for {peer_username}")
+                 self.chat_stack.setCurrentWidget(self.no_chat_selected_widget)
+
+            # Mark as read (reset bold)
+            font = current.font()
+            if font.bold():
+                 font.setBold(False)
+                 current.setFont(font)
+        else: # No item selected
+            self.current_chat_peer_username = None
+            self.chat_stack.setCurrentWidget(self.no_chat_selected_widget)
 
     def setup_transfers_tab(self):
         layout=QVBoxLayout(self.transfers_tab);layout.setSpacing(10);layout.setContentsMargins(15,15,15,15);transfer_label=QLabel("Active Transfers:");transfer_label.setStyleSheet("font-weight: bold; font-size: 14px; margin-bottom: 5px;");layout.addWidget(transfer_label);self.transfer_list=QListWidget();self.transfer_list.setObjectName("transfer_list");layout.addWidget(self.transfer_list,1);self.progress_bar=QProgressBar();self.progress_bar.setValue(0);self.progress_bar.setTextVisible(True);layout.addWidget(self.progress_bar);button_layout=QHBoxLayout();button_layout.setSpacing(10);button_layout.addStretch();self.pause_button=QPushButton("Pause");self.pause_button.setObjectName("pause_button");self.pause_button.setIcon(QIcon.fromTheme("media-playback-pause",QIcon("./icons/pause.png")));self.resume_button=QPushButton("Resume");self.resume_button.setObjectName("resume_button");self.resume_button.setIcon(QIcon.fromTheme("media-playback-start",QIcon("./icons/resume.png")));button_layout.addWidget(self.pause_button);button_layout.addWidget(self.resume_button);layout.addLayout(button_layout);self.transfer_list.currentItemChanged.connect(self.on_transfer_selection_changed);self.pause_button.clicked.connect(self.pause_transfer);self.resume_button.clicked.connect(self.resume_transfer);self.update_transfer_list_display({})
@@ -749,10 +827,12 @@ class MainWindow(QMainWindow):
         timestamp = time.strftime("%H:%M:%S"); formatted_message = f'<span style="color:#aaa;">[{timestamp}]</span> <b>{sender}:</b> {message}'; history_widget.append(formatted_message); history_widget.moveCursor(QTextCursor.MoveOperation.End)
 
     @pyqtSlot(str, str)
+        
     def display_received_message(self, sender_display_name, message):
         """Displays a received message in the correct chat window."""
         # Extract base username robustly
         base_sender_username = sender_display_name
+        # Handle names potentially missing device ID
         if "(" in sender_display_name and sender_display_name.endswith(")"):
             base_sender_username = sender_display_name[:sender_display_name.rfind("(")]
 
@@ -761,33 +841,37 @@ class MainWindow(QMainWindow):
         # Ensure chat widget exists (might receive message before selecting chat)
         self.create_chat_widget(base_sender_username) # Creates if not exists
 
-        # Check if widget was actually created/exists before proceeding
+        # **** Check if widget exists in dict BEFORE accessing ****
         if base_sender_username in self.chat_widgets:
             # Append to persistent history
             self.chat_histories[base_sender_username].append((sender_display_name, message))
 
             # Append to UI widget
-            history_widget = self.chat_widgets[base_sender_username]['history']
-            self._append_message_to_history(history_widget, sender_display_name, message)
+            try:
+                # Access widgets safely
+                history_widget = self.chat_widgets[base_sender_username]['history']
+                self._append_message_to_history(history_widget, sender_display_name, message)
+            except KeyError as e:
+                 logger.error(f"KeyError accessing chat widget components for {base_sender_username} after creation attempt: {e}")
+                 self.update_status_bar(f"UI Error displaying message from {sender_display_name}")
+                 return # Stop processing this message if widgets are missing
 
             # Indicate unread if not the current chat
             if self.current_chat_peer_username != base_sender_username:
                  # Find item using the base username stored in its UserRole data
                  for i in range(self.chat_peer_list.count()):
                       item = self.chat_peer_list.item(i)
-                      if item.data(Qt.ItemDataRole.UserRole) == base_sender_username:
+                      # Check if item data exists and matches
+                      item_data = item.data(Qt.ItemDataRole.UserRole)
+                      if item_data == base_sender_username:
                            font = item.font()
                            font.setBold(True)
                            item.setFont(font)
                            break # Found the item
         else:
-            logger.error(f"Failed to find or create chat widget for base username: {base_sender_username} from display name: {sender_display_name}")
-            self.update_status_bar(f"Error displaying message from {sender_display_name}")
-    def display_sent_message(self, recipient_username, message):
-        own_name = get_own_display_name() if NETWORKING_AVAILABLE else f"{self.username}(You)"; self.chat_histories[recipient_username].append((own_name, message))
-        if recipient_username in self.chat_widgets: history_widget = self.chat_widgets[recipient_username]['history']; self._append_message_to_history(history_widget, own_name, message)
-        else: logger.warning(f"Sent message to '{recipient_username}' but no chat widget.")
-
+            # This case indicates create_chat_widget failed to add the entry
+            logger.error(f"Chat widget for {base_sender_username} not found in self.chat_widgets after creation attempt.")
+            self.update_status_bar(f"UI Error preparing chat for {sender_display_name}")
     @pyqtSlot(str, bool)
     def handle_connection_status_update(self, peer_ip, is_connected):
         logger.info(f"Conn status update: IP={peer_ip}, Connected={is_connected}"); peer_name = get_peer_display_name(peer_ip) if NETWORKING_AVAILABLE else f"P_{peer_ip}"; status_msg = f"{peer_name} has {'connected' if is_connected else 'disconnected'}." ; self.update_status_bar(status_msg)
@@ -963,17 +1047,68 @@ class MainWindow(QMainWindow):
         else:
              self.update_status_bar("No peer selected.")
 
-    def send_chat_message(self, peer_username):
-        if not peer_username or peer_username not in self.chat_widgets: logger.error(f"Send invalid chat: {peer_username}"); return
-        widgets = self.chat_widgets[peer_username]; message = widgets['input'].text().strip()
-        if not message: return
-        self.display_sent_message(peer_username, message)
-        target_ip = next((ip for u, ip in peer_usernames.items() if u == peer_username), None) if NETWORKING_AVAILABLE else None
-        if target_ip:
-            if not self.backend.trigger_send_message(message, target_peer_ip=target_ip): self.update_status_bar(f"Failed to send message to {peer_username}")
-            else: widgets['input'].clear()
-        else: self.update_status_bar(f"Error: Could not find IP for {peer_username}")
+        # Inside class MainWindow:
+        # --- Add this NEW method inside the MainWindow class ---
+    def display_sent_message(self, recipient_username, message):
+        """Displays a message sent by the user in the correct chat window."""
+        # Get your own display name
+        own_name = get_own_display_name() if NETWORKING_AVAILABLE else f"{self.username}(You)"
 
+        # Append to the persistent history cache first
+        self.chat_histories[recipient_username].append((own_name, message))
+
+        # Check if the chat widget exists for this recipient
+        if recipient_username in self.chat_widgets:
+            try:
+                history_widget = self.chat_widgets[recipient_username]['history']
+                # Append the formatted message to the text edit
+                self._append_message_to_history(history_widget, own_name, message)
+            except KeyError:
+                logger.error(f"KeyError accessing chat widget components for {recipient_username} in display_sent_message.")
+            except Exception as e:
+                logger.exception(f"Error updating sent message display for {recipient_username}: {e}")
+        else:
+            # This might happen if a message is sent immediately after connecting
+            # before the UI has fully switched, or if create_chat_widget failed.
+            logger.warning(f"Attempted to display sent message to '{recipient_username}', but their chat widget was not found in self.chat_widgets.")
+            # Optionally, you could try creating the widget here again, but it might indicate another issue.
+            # self.create_chat_widget(recipient_username)
+            # if recipient_username in self.chat_widgets: ... retry appending ...
+    # --- End of NEW method ---
+
+    # --- Ensure send_chat_message calls the correct method ---
+    def send_chat_message(self, peer_username):
+        if not peer_username or peer_username not in self.chat_widgets:
+            logger.error(f"Send invalid chat target: {peer_username}")
+            return
+
+        widgets = self.chat_widgets[peer_username]
+        message = widgets['input'].text().strip()
+
+        if not message:
+            logger.debug("Empty message entered, not sending.")
+            return
+
+        # *** Make sure this line calls the method you just defined ***
+        self.display_sent_message(peer_username, message) # Call the correct method
+
+        # Find target IP
+        target_ip = next((ip for u, ip in peer_usernames.items() if u == peer_username), None) if NETWORKING_AVAILABLE else None
+        logger.info(f"Attempting to send to {peer_username}. Found IP: {target_ip}. Message: '{message[:50]}...'")
+
+        if target_ip:
+            success = self.backend.trigger_send_message(message, target_peer_ip=target_ip)
+            logger.info(f"Backend trigger_send_message returned: {success}")
+            if success:
+                 widgets['input'].clear()
+            else:
+                 self.update_status_bar(f"Failed to schedule send for {peer_username}")
+        else:
+            self.update_status_bar(f"Error: Could not find IP for {peer_username}")
+            logger.error(f"Could not find IP for username {peer_username} in peer_usernames: {peer_usernames}")
+
+    # --- Keep _append_message_to_history and other methods ---
+    
     def choose_file_action(self):
         path = self.backend.choose_file(self)
         if path: self.selected_file = path; self.selected_file_label.setText(os.path.basename(path)); self.selected_file_label.setStyleSheet("color: #e0e0e0;"); self.update_status_bar(f"File chosen: {os.path.basename(path)}")
