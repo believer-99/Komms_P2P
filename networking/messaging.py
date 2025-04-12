@@ -1,4 +1,3 @@
-# networking/messaging.py
 import asyncio
 import logging
 import websockets
@@ -339,9 +338,12 @@ async def handle_incoming_connection(websocket, peer_ip):
         return False
 
 # --- Message Sending/Receiving ---
+# networking/messaging.py
 async def send_message_to_peers(message, target_peer_ip=None):
     """Send an encrypted message to one or all connected peers. Called by Backend."""
-    if not isinstance(message, str) or not message: logger.warning("Attempted send empty message."); return False
+    # 'message' is defined here as an argument
+    if not isinstance(message, str) or not message:
+        logger.warning("Attempted send empty message."); return False
 
     targets = []
     peers_to_send = {}
@@ -362,6 +364,7 @@ async def send_message_to_peers(message, target_peer_ip=None):
             key = peer_public_keys.get(ip)
             if not key: logger.warning(f"Missing public key for {display_name} ({ip}). Cannot encrypt."); continue
             try:
+                # 'message' is used here - it should be defined from the function argument
                 encrypted_message = key.encrypt(message.encode(), padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)).hex()
                 payload = json.dumps({"type": "MESSAGE", "message": encrypted_message})
                 await asyncio.wait_for(ws.send(payload), timeout=10.0)
@@ -371,8 +374,6 @@ async def send_message_to_peers(message, target_peer_ip=None):
         else: logger.warning(f"Attempted send to closed connection: {display_name} ({ip})")
 
     return sent_count > 0
-
-
 async def receive_peer_messages(websocket, peer_ip):
     """Receive messages from a connected peer. Started by connect_to_peer or handle_incoming_connection."""
     display_name = get_peer_display_name(peer_ip)
@@ -560,9 +561,7 @@ async def user_input(discovery):
 
             if message == "/exit":
                 shutdown_event.set(); break
-            # Handle other commands (/list, /connect, /msg, /send etc.)
-            # using await connect_to_peer, await send_message_to_peers etc.
-            # and putting output/status onto message_queue
+            
             elif message == "/help": await message_queue.put("Help text...")
             # ... etc ...
             elif not message.startswith("/"):
