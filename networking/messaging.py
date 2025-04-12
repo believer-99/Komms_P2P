@@ -1,3 +1,4 @@
+# networking/messaging.py
 import asyncio
 import logging
 import websockets
@@ -15,6 +16,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from appdirs import user_config_dir
 from websockets.connection import State
 
+# MODIFIED: Import from local modules/shared state
 from networking.utils import get_own_ip
 from networking.shared_state import (
     active_transfers, message_queue, connections, user_data, peer_public_keys,
@@ -193,12 +195,18 @@ async def connect_to_peer(peer_ip, requesting_username, target_username, port=87
     except (asyncio.TimeoutError, websockets.exceptions.WebSocketException, json.JSONDecodeError, ConnectionRefusedError, ConnectionAbortedError, OSError) as e:
         logger.error(f"Failed to connect to {target_username} ({peer_ip}): {e}")
         await message_queue.put({"type": "log", "message": f"Failed to connect to {target_username}: {e}", "level": logging.ERROR})
-        if websocket and websocket.open: await websocket.close()
+        # --- *** CORRECTED CHECK *** ---
+        if websocket and websocket.state == State.OPEN:
+             await websocket.close(code=1011, reason=f"Connection Error: {e}")
+        # --- *** /CORRECTED CHECK *** ---
         return False # Indicate failure
     except Exception as e: # Catch unexpected errors
         logger.exception(f"Unexpected error connecting to {peer_ip}: {e}")
         await message_queue.put({"type": "log", "message": f"Unexpected connect error: {e}", "level": logging.ERROR})
-        if websocket and websocket.open: await websocket.close()
+        # --- *** CORRECTED CHECK *** ---
+        if websocket and websocket.state == State.OPEN:
+            await websocket.close(code=1011, reason=f"Unexpected Error: {e}")
+        # --- *** /CORRECTED CHECK *** ---
         return False
 
 async def disconnect_from_peer(peer_ip):
@@ -242,97 +250,91 @@ async def disconnect_from_peer(peer_ip):
 async def handle_incoming_connection(websocket, peer_ip):
     """Handle handshake for new incoming connections. Called by websockets.serve handler."""
     approved = False; requesting_display_name = f"Peer@{peer_ip}"
-    requesting_username = "Unknown"; approval_key = None # Define vars outside try
+    requesting_username = "Unknown"; approval_key = None
 
     try:
-        # Timeout for entire handshake process
-        async with asyncio.timeout(60.0): # e.g., 60 seconds total for handshake + approval
-            init_message = await websocket.recv()
-            if shutdown_event.is_set(): await websocket.close(1001); return False
-            if not isinstance(init_message, str) or not init_message.startswith("INIT "): raise ValueError("Invalid INIT message")
-            _, sender_ip = init_message.split(" ", 1); logger.info(f"Received INIT from {peer_ip}")
+        # Timeout for initial handshake phases (INIT + CONNECTION_REQUEST)
+        # --- *** CORRECTED: Use wait_for instead of timeout *** ---
+        init_message = await asyncio.wait_for(websocket.recv(), timeout=30.0)
+        # --- *** /CORRECTED *** ---
 
-            if peer_ip in connections: logger.warning(f"Duplicate connection from {peer_ip}"); await websocket.close(1008); return False
+        if shutdown_event.is_set(): await websocket.close(1001); return False
+        if not isinstance(init_message, str) or not init_message.startswith("INIT "): raise ValueError("Invalid INIT message")
+        _, sender_ip = init_message.split(" ", 1); logger.info(f"Received INIT from {peer_ip}")
 
-            await websocket.send("INIT_ACK")
-            request_raw = await websocket.recv()
-            request_data = json.loads(request_raw)
+        if peer_ip in connections: logger.warning(f"Duplicate connection from {peer_ip}"); await websocket.close(1008); return False
 
-            if request_data["type"] == "CONNECTION_REQUEST":
-                requesting_username = request_data["requesting_username"] # Assign here
-                target_username = request_data["target_username"]
-                peer_key_pem = request_data["key"]
-                req_dev_id = request_data["device_id"]
-                requesting_display_name = f"{requesting_username}({req_dev_id[:8]})"
-                logger.info(f"Connection request from {requesting_display_name} targeting {target_username}")
+        await websocket.send("INIT_ACK")
 
-                if target_username != user_data["original_username"]:
-                     raise ConnectionRefusedError("Incorrect target username")
+        # --- *** CORRECTED: Use wait_for instead of timeout *** ---
+        request_raw = await asyncio.wait_for(websocket.recv(), timeout=30.0) # Timeout for request
+        # --- *** /CORRECTED *** ---
+        request_data = json.loads(request_raw)
 
-                # Use tuple key for denials/approvals
-                approval_key = (peer_ip, requesting_username)
-                denial_key = (target_username, requesting_username) # Correct key for denials
-                denial_count = connection_denials.get(denial_key, 0)
-                if denial_count >= 3: raise ConnectionRefusedError("Connection blocked (previous denials)")
+        # --- Keep the rest of the try block the same, using asyncio.wait_for ---
+        # --- for the approval_future as well (it was already correct there) ---
+        if request_data["type"] == "CONNECTION_REQUEST":
+            # ... (rest of connection request logic, including the asyncio.wait_for(approval_future, ...))
+            requesting_username = request_data["requesting_username"] # Assign here
+            target_username = request_data["target_username"]
+            peer_key_pem = request_data["key"]
+            req_dev_id = request_data["device_id"]
+            requesting_display_name = f"{requesting_username}({req_dev_id[:8]})"
+            logger.info(f"Connection request from {requesting_display_name} targeting {target_username}")
 
-                # --- Approval ---
-                approval_future = asyncio.Future(); pending_approvals[approval_key] = approval_future
-                # ADDED: Notify GUI via queue
-                await message_queue.put({"type": "approval_request", "peer_ip": peer_ip, "requesting_username": requesting_display_name}) # Send display name
+            if target_username != user_data["original_username"]: raise ConnectionRefusedError("Incorrect target username")
+            approval_key = (peer_ip, requesting_username); denial_key = (target_username, requesting_username); denial_count = connection_denials.get(denial_key, 0)
+            if denial_count >= 3: raise ConnectionRefusedError("Connection blocked (previous denials)")
 
-                try: approved = await approval_future # Wait indefinitely until set/cancelled
-                finally: pending_approvals.pop(approval_key, None) # Cleanup pending approval
+            approval_future = asyncio.Future(); pending_approvals[approval_key] = approval_future
+            await message_queue.put({"type": "approval_request", "peer_ip": peer_ip, "requesting_username": requesting_display_name})
+            try:
+                # This wait_for was likely already correct, but confirm timeout value
+                approved = await asyncio.wait_for(approval_future, timeout=60.0) # Example: 60s for user response
+            except asyncio.TimeoutError:
+                 logger.info(f"Approval timeout for {requesting_display_name}"); approved = False # Ensure False on timeout
+            finally: pending_approvals.pop(approval_key, None)
 
-                if not approved:
-                     # Increment denial count
-                     current_denials = connection_denials.get(denial_key, 0) + 1; connection_denials[denial_key] = current_denials
-                     # ADDED: Notify GUI of denial via queue
-                     await message_queue.put({"type": "log", "message": f"Denied connection from {requesting_display_name} ({current_denials}/3)"})
-                     if current_denials >= 3: await message_queue.put({"type": "log", "message": f"{requesting_display_name} blocked for session."})
-                     raise ConnectionRefusedError("Connection denied by user")
-                # --- /Approval ---
+            if not approved:
+                 current_denials = connection_denials.get(denial_key, 0) + 1; connection_denials[denial_key] = current_denials
+                 await message_queue.put({"type": "log", "message": f"Denied connection from {requesting_display_name} ({current_denials}/3)"})
+                 if current_denials >= 3: await message_queue.put({"type": "log", "message": f"{requesting_display_name} blocked."})
+                 raise ConnectionRefusedError("Connection denied by user or timeout")
 
-                logger.info(f"Connection approved for {requesting_display_name}")
-                await websocket.send(json.dumps({"type": "CONNECTION_RESPONSE", "approved": True}))
+            logger.info(f"Connection approved for {requesting_display_name}")
+            await websocket.send(json.dumps({"type": "CONNECTION_RESPONSE", "approved": True}))
+            own_public_key_pem = user_data["public_key"].public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+            await websocket.send(json.dumps({"type": "IDENTITY", "username": user_data["original_username"], "device_id": user_data["device_id"], "key": own_public_key_pem}))
+            # --- *** CORRECTED: Use wait_for instead of timeout *** ---
+            identity_raw = await asyncio.wait_for(websocket.recv(), timeout=15.0) # Timeout for identity
+            # --- *** /CORRECTED *** ---
+            identity_data = json.loads(identity_raw)
 
-                # Send own identity
-                own_public_key_pem = user_data["public_key"].public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode()
-                await websocket.send(json.dumps({"type": "IDENTITY", "username": user_data["original_username"], "device_id": user_data["device_id"], "key": own_public_key_pem}))
+            if identity_data["type"] == "IDENTITY" and identity_data["username"] == requesting_username and identity_data["device_id"] == req_dev_id:
+                 peer_public_keys[peer_ip] = serialization.load_pem_public_key(peer_key_pem.encode())
+                 peer_usernames[requesting_username] = peer_ip; peer_device_ids[peer_ip] = req_dev_id; connections[peer_ip] = websocket
+                 final_display_name = get_peer_display_name(peer_ip); logger.info(f"Connection established with {final_display_name} ({peer_ip})")
+                 await message_queue.put({"type": "connection_status", "peer_ip": peer_ip, "connected": True})
+                 await message_queue.put({"type": "log", "message": f"Connected to {final_display_name}"})
+                 return True
+            else: raise ConnectionAbortedError("Invalid final IDENTITY received")
+        else: raise ValueError(f"Unexpected message type after INIT_ACK: {request_data.get('type')}")
 
-                # Receive peer's identity
-                identity_raw = await websocket.recv()
-                identity_data = json.loads(identity_raw)
-
-                if identity_data["type"] == "IDENTITY" and identity_data["username"] == requesting_username and identity_data["device_id"] == req_dev_id:
-                    # --- Finalize Connection ---
-                    peer_public_keys[peer_ip] = serialization.load_pem_public_key(peer_key_pem.encode())
-                    peer_usernames[requesting_username] = peer_ip # Map username to IP
-                    peer_device_ids[peer_ip] = req_dev_id
-                    connections[peer_ip] = websocket # Add ONLY on full success
-
-                    final_display_name = get_peer_display_name(peer_ip) # Get name after state update
-                    logger.info(f"Connection established with {final_display_name} ({peer_ip})")
-                    # ADDED: Notify GUI
-                    await message_queue.put({"type": "connection_status", "peer_ip": peer_ip, "connected": True})
-                    await message_queue.put({"type": "log", "message": f"Connected to {final_display_name}"})
-                    return True # Success, ready for receive_peer_messages
-                else:
-                     raise ConnectionAbortedError("Invalid final IDENTITY received")
-            else:
-                raise ValueError(f"Unexpected message type after INIT_ACK: {request_data.get('type')}")
-
+    # --- Keep the main except block as before, but ensure websocket.state check ---
     except (asyncio.TimeoutError, websockets.exceptions.WebSocketException, json.JSONDecodeError, ConnectionRefusedError, ConnectionAbortedError, ValueError, OSError) as e:
         logger.warning(f"Handshake failed with {peer_ip} ({requesting_username}): {e}")
-        # ADDED: Notify GUI of failure
         await message_queue.put({"type": "log", "message": f"Connection failed with {requesting_display_name}: {e}", "level": logging.WARNING})
-        if websocket and websocket.open: await websocket.close(1002, f"Handshake error: {e}")
-        # Clean up pending approval if handshake failed mid-way
+        # --- *** CORRECTED CHECK *** ---
+        if websocket and websocket.state == State.OPEN: await websocket.close(1002, f"Handshake error: {e}")
+        # --- *** /CORRECTED CHECK *** ---
         if approval_key and approval_key in pending_approvals: pending_approvals.pop(approval_key, None)
         return False # Handshake failed
     except Exception as e: # Catch unexpected errors
         logger.exception(f"Unexpected error during handshake with {peer_ip}: {e}")
         await message_queue.put({"type": "log", "message": f"Internal handshake error: {e}", "level": logging.ERROR})
-        if websocket and websocket.open: await websocket.close(1011, "Internal handshake error")
+         # --- *** CORRECTED CHECK *** ---
+        if websocket and websocket.state == State.OPEN: await websocket.close(1011, "Internal handshake error")
+        # --- *** /CORRECTED CHECK *** ---
         if approval_key and approval_key in pending_approvals: pending_approvals.pop(approval_key, None)
         return False
 
@@ -381,127 +383,118 @@ async def receive_peer_messages(websocket, peer_ip):
         async for message in websocket:
             if shutdown_event.is_set(): break
 
-            # --- Message Processing Logic ---
-            try:
-                # Try JSON first
-                data = json.loads(message)
-                msg_type = data.get("type")
-                logger.debug(f"Received JSON from {display_name}: type={msg_type}")
+            # --- *** MODIFIED LOGIC *** ---
+            is_binary = isinstance(message, bytes)
 
-                if msg_type == "MESSAGE":
-                    try:
-                        decrypted = user_data["private_key"].decrypt(bytes.fromhex(data["message"]), padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)).decode()
-                        # ADDED: Put structured message on queue
-                        await message_queue.put({"type": "message", "sender_display_name": display_name, "content": decrypted})
-                    except Exception as dec_err: logger.error(f"Decrypt error from {display_name}: {dec_err}"); await message_queue.put({"type":"log","message":f"[Decrypt Error from {display_name}]","level":logging.WARNING})
+            # 1. Handle expected binary data for ongoing transfer FIRST
+            if is_binary and current_receiving_transfer and current_receiving_transfer.state == TransferState.IN_PROGRESS:
+                transfer = current_receiving_transfer
+                try:
+                    async with transfer.condition:
+                        # Double-check state inside lock
+                        if transfer.state != TransferState.IN_PROGRESS:
+                             logger.warning(f"Binary data for non-active transfer {transfer.transfer_id[:8]} received but state changed."); continue
 
-                elif msg_type == "file_transfer_init":
-                    # ... (file init logic as before) ...
-                    tid=data["transfer_id"]; fname=data["filename"]; fsize=data["filesize"]; fhash=data.get("file_hash"); path=os.path.join("downloads", os.path.basename(fname)); os.makedirs("downloads", exist_ok=True)
-                    # Handle potential name conflicts
-                    counter = 1; base, ext = os.path.splitext(path)
-                    while os.path.exists(path): path = f"{base}({counter}){ext}"; counter += 1
-                    # Create transfer object
-                    transfer = FileTransfer(path, peer_ip, direction="receive", transfer_id=tid); transfer.total_size = fsize; transfer.expected_hash = fhash; transfer.state = TransferState.IN_PROGRESS
-                    try:
-                        transfer.file_handle = await aiofiles.open(path, "wb")
-                        active_transfers[tid] = transfer; current_receiving_transfer = transfer # Track for this conn
-                        logger.info(f"Receiving '{os.path.basename(path)}' ({tid[:8]}) from {display_name}")
-                        # ADDED: Notify GUI
-                        await message_queue.put({"type": "transfer_update"})
-                        await message_queue.put({"type": "log", "message": f"Receiving '{os.path.basename(path)}' from {display_name} (ID: {tid[:8]})"})
-                    except OSError as e: logger.error(f"Failed open file for transfer {tid}: {e}"); await message_queue.put({"type":"log","message":f"Error receiving from {display_name}: Cannot open file","level":logging.ERROR}); current_receiving_transfer = None
+                        await transfer.file_handle.write(message) # Write the raw bytes
+                        transfer.transferred_size += len(message)
+                        if transfer.hash_algo: transfer.hash_algo.update(message)
 
-                # --- Binary chunks now come directly, not JSON ---
+                        # Check completion
+                        if transfer.transferred_size >= transfer.total_size:
+                            await transfer.file_handle.close(); transfer.file_handle = None
+                            final_state = TransferState.COMPLETED
+                            completion_msg = f"Received '{os.path.basename(transfer.file_path)}' from {display_name}."
+                            if transfer.expected_hash:
+                                calc_hash = transfer.hash_algo.hexdigest()
+                                if calc_hash == transfer.expected_hash: logger.info(f"Hash verified for {transfer.transfer_id[:8]}")
+                                else:
+                                    final_state = TransferState.FAILED; completion_msg = f"Hash FAILED for '{os.path.basename(transfer.file_path)}'. File deleted."; logger.error(f"Hash mismatch {transfer.transfer_id[:8]}. Exp {transfer.expected_hash}, Got {calc_hash}")
+                                    try: os.remove(transfer.file_path)
+                                    except OSError as rm_err: logger.error(f"Failed delete corrupted file {transfer.file_path}: {rm_err}")
+                            else: completion_msg += " (No integrity check)."
+                            transfer.state = final_state
+                            await message_queue.put({"type": "log", "message": completion_msg, "level": logging.ERROR if final_state == TransferState.FAILED else logging.INFO})
+                            await message_queue.put({"type": "transfer_update"})
+                            current_receiving_transfer = None # Ready for next potential transfer
+                except Exception as write_err:
+                     logger.exception(f"Error writing file chunk for {transfer.transfer_id[:8]}: {write_err}")
+                     await transfer.fail(f"File write error: {write_err}") # Mark as failed
+                     current_receiving_transfer = None # Stop trying for this transfer
 
-                elif msg_type == "TRANSFER_PAUSE": # Assuming control messages are JSON
-                    tid = data.get("transfer_id"); transfer = active_transfers.get(tid)
-                    if transfer and transfer.peer_ip == peer_ip and transfer.state == TransferState.IN_PROGRESS: await transfer.pause(); await message_queue.put({"type": "log", "message": f"{display_name} paused transfer {tid[:8]}"})
+            # 2. Handle JSON messages (only if not binary or no transfer active)
+            elif not is_binary:
+                try:
+                    data = json.loads(message) # Now we are reasonably sure it *should* be JSON
+                    msg_type = data.get("type")
+                    logger.debug(f"Processing JSON type '{msg_type}' from {display_name}")
 
-                elif msg_type == "TRANSFER_RESUME":
-                    tid = data.get("transfer_id"); transfer = active_transfers.get(tid)
-                    if transfer and transfer.peer_ip == peer_ip and transfer.state == TransferState.PAUSED: await transfer.resume(); await message_queue.put({"type": "log", "message": f"{display_name} resumed transfer {tid[:8]}"})
+                    if msg_type == "MESSAGE":
+                         # ... (decrypt logic as before) ...
+                         try:
+                             decrypted = user_data["private_key"].decrypt(bytes.fromhex(data["message"]), padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)).decode()
+                             await message_queue.put({"type": "message", "sender_display_name": display_name, "content": decrypted})
+                         except Exception as dec_err: logger.error(f"Decrypt error from {display_name}: {dec_err}"); await message_queue.put({"type":"log","message":f"[Decrypt Error from {display_name}]","level":logging.WARNING})
 
-                # --- Add Group Message Handling Here ---
-                # elif msg_type == "GROUP_CREATE": ... await message_queue.put({"type": "group_list_update"}) ...
-                # elif msg_type == "GROUP_INVITE": ... await message_queue.put({"type": "pending_invites_update"}) ...
-                # elif msg_type == "GROUP_INVITE_RESPONSE": ... await message_queue.put({"type": "group_list_update"}) ...
-                # etc.
+                    elif msg_type == "file_transfer_init":
+                        # If another transfer is already in progress, maybe reject or queue? For now, overwrite.
+                        if current_receiving_transfer:
+                             logger.warning(f"New transfer init received while another transfer ({current_receiving_transfer.transfer_id[:8]}) is active. Overwriting.")
+                             await current_receiving_transfer.fail("Superseded by new transfer") # Fail the old one
 
-                else: logger.warning(f"Received unknown JSON type '{msg_type}' from {display_name}")
-
-            except json.JSONDecodeError:
-                # --- If not JSON, assume it's a file chunk (binary) ---
-                if isinstance(message, bytes):
-                    if current_receiving_transfer and current_receiving_transfer.state == TransferState.IN_PROGRESS:
-                        transfer = current_receiving_transfer
+                        tid=data["transfer_id"]; fname=data["filename"]; fsize=data["filesize"]; fhash=data.get("file_hash"); path=os.path.join("downloads", os.path.basename(fname)); os.makedirs("downloads", exist_ok=True)
+                        counter = 1; base, ext = os.path.splitext(path)
+                        while os.path.exists(path): path = f"{base}({counter}){ext}"; counter += 1
+                        transfer = FileTransfer(path, peer_ip, direction="receive", transfer_id=tid); transfer.total_size = fsize; transfer.expected_hash = fhash; transfer.state = TransferState.IN_PROGRESS
                         try:
-                            async with transfer.condition:
-                                if transfer.state != TransferState.IN_PROGRESS: logger.warning(f"Binary data for non-active transfer {transfer.transfer_id[:8]}"); continue
-                                chunk = message
-                                await transfer.file_handle.write(chunk)
-                                transfer.transferred_size += len(chunk)
-                                if transfer.hash_algo: transfer.hash_algo.update(chunk)
+                            transfer.file_handle = await aiofiles.open(path, "wb")
+                            active_transfers[tid] = transfer; current_receiving_transfer = transfer # Set expected transfer
+                            logger.info(f"Receiving '{os.path.basename(path)}' ({tid[:8]}) from {display_name}")
+                            await message_queue.put({"type": "transfer_update"})
+                            await message_queue.put({"type": "log", "message": f"Receiving '{os.path.basename(path)}' from {display_name} (ID: {tid[:8]})"})
+                        except OSError as e: logger.error(f"Failed open file for transfer {tid}: {e}"); await message_queue.put({"type":"log","message":f"Error receiving from {display_name}: Cannot open file","level":logging.ERROR}); current_receiving_transfer = None
 
-                                if transfer.transferred_size >= transfer.total_size:
-                                    await transfer.file_handle.close(); transfer.file_handle = None
-                                    final_state = TransferState.COMPLETED; completion_msg = f"Received '{os.path.basename(transfer.file_path)}' from {display_name}."
-                                    if transfer.expected_hash:
-                                        calc_hash = transfer.hash_algo.hexdigest()
-                                        if calc_hash == transfer.expected_hash: logger.info(f"File hash verified for {transfer.transfer_id[:8]}")
-                                        else:
-                                            final_state = TransferState.FAILED; completion_msg = f"Integrity check FAILED for '{os.path.basename(transfer.file_path)}'. File deleted."; logger.error(f"Hash mismatch {transfer.transfer_id[:8]}. Exp {transfer.expected_hash}, Got {calc_hash}")
-                                            try: os.remove(transfer.file_path)
-                                            except OSError as rm_err: logger.error(f"Failed delete corrupted file {transfer.file_path}: {rm_err}")
-                                    else: completion_msg += " (No integrity check)."
-                                    transfer.state = final_state
-                                    await message_queue.put({"type": "log", "message": completion_msg, "level": logging.ERROR if final_state == TransferState.FAILED else logging.INFO})
-                                    await message_queue.put({"type": "transfer_update"}) # Update GUI list
-                                    current_receiving_transfer = None # Ready for next
-                        except Exception as write_err:
-                             logger.exception(f"Error writing file chunk for {transfer.transfer_id[:8]}: {write_err}")
-                             await transfer.fail(f"File write error: {write_err}")
-                             current_receiving_transfer = None # Stop processing for this transfer
+                    elif msg_type == "TRANSFER_PAUSE":
+                        tid = data.get("transfer_id"); transfer = active_transfers.get(tid)
+                        if transfer and transfer.peer_ip == peer_ip and transfer.state == TransferState.IN_PROGRESS: await transfer.pause(); await message_queue.put({"type": "log", "message": f"{display_name} paused transfer {tid[:8]}"})
+
+                    elif msg_type == "TRANSFER_RESUME":
+                         tid = data.get("transfer_id"); transfer = active_transfers.get(tid)
+                         if transfer and transfer.peer_ip == peer_ip and transfer.state == TransferState.PAUSED: await transfer.resume(); await message_queue.put({"type": "log", "message": f"{display_name} resumed transfer {tid[:8]}"})
+
+                    # --- Group Message Handling ---
+                    # ... (handle GROUP_CREATE, GROUP_INVITE etc. as before) ...
+
                     else:
-                        logger.warning(f"Received unexpected binary data from {display_name} when no transfer active.")
-                else:
-                    # Neither JSON nor binary - maybe plaintext? Log it.
-                    logger.warning(f"Received non-JSON, non-binary message from {display_name}: {message[:100]}...")
-                    # ADDED: Put raw message on queue for display
-                    await message_queue.put({"type": "message", "sender_display_name": display_name, "content": f"[RAW] {message}"})
+                        logger.warning(f"Received unknown JSON type '{msg_type}' from {display_name}")
 
-            except Exception as proc_err:
-                 logger.exception(f"Error processing message from {display_name}: {proc_err}")
+                except json.JSONDecodeError:
+                     # Should not happen often now if is_binary check is correct
+                     logger.warning(f"Received non-JSON message from {display_name} when JSON was expected: {message[:100]}...")
+                     await message_queue.put({"type": "message", "sender_display_name": display_name, "content": f"[INVALID JSON] {message[:100]}..."})
+                except Exception as proc_err:
+                     logger.exception(f"Error processing JSON message from {display_name}: {proc_err}")
 
-    except websockets.exceptions.ConnectionClosedOK:
-        logger.info(f"Connection closed normally by {display_name} ({peer_ip})")
-    except websockets.exceptions.ConnectionClosedError as e:
-         logger.warning(f"Connection closed abruptly by {display_name} ({peer_ip}): {e}")
-    except asyncio.CancelledError:
-         logger.info(f"Receive loop cancelled for {display_name} ({peer_ip})")
-    except Exception as e:
-        logger.exception(f"Unexpected error in receive loop for {display_name} ({peer_ip}): {e}")
+            # 3. Handle unexpected binary data (no transfer active)
+            elif is_binary:
+                 logger.warning(f"Received unexpected binary data from {display_name} when no transfer active.")
+
+            # --- End Message Processing Logic ---
+
+    except websockets.exceptions.ConnectionClosedOK: logger.info(f"Connection closed normally by {display_name} ({peer_ip})")
+    except websockets.exceptions.ConnectionClosedError as e: logger.warning(f"Connection closed abruptly by {display_name} ({peer_ip}): {e}")
+    except asyncio.CancelledError: logger.info(f"Receive loop cancelled for {display_name} ({peer_ip})")
+    except Exception as e: logger.exception(f"Unexpected error in receive loop for {display_name} ({peer_ip}): {e}")
     finally:
+        # --- Keep cleanup logic as before ---
         logger.debug(f"Cleaning up connection state for {peer_ip}")
-        # Ensure state is removed from all relevant dicts
-        connections.pop(peer_ip, None)
-        peer_public_keys.pop(peer_ip, None)
-        peer_device_ids.pop(peer_ip, None)
+        connections.pop(peer_ip, None); peer_public_keys.pop(peer_ip, None); peer_device_ids.pop(peer_ip, None)
         username = next((u for u, ip in peer_usernames.items() if ip == peer_ip), None)
         if username: peer_usernames.pop(username, None)
-
-        # Fail any ongoing receiving transfer for this peer
-        if current_receiving_transfer:
-            await current_receiving_transfer.fail("Connection lost")
-            # Removal from active_transfers handled by update_transfer_progress
-
+        if current_receiving_transfer: await current_receiving_transfer.fail("Connection lost")
         if not shutdown_event.is_set():
-            # ADDED: Notify GUI of disconnection
             await message_queue.put({"type": "connection_status", "peer_ip": peer_ip, "connected": False})
             await message_queue.put({"type": "log", "message": f"Disconnected from {display_name}"})
         logger.info(f"Receive loop finished for {display_name} ({peer_ip})")
-
-
 # --- Peer List Maintenance ---
 async def maintain_peer_list(discovery_instance):
     """Periodically check connections and update peer list based on discovery."""
