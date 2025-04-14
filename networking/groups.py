@@ -3,8 +3,11 @@ import json
 import logging
 from websockets.connection import State
 
-# MODIFIED: Import message_queue
-from networking.shared_state import connections, groups, user_data, message_queue
+# MODIFIED: Import locks as well
+from networking.shared_state import (
+    connections, groups, user_data, message_queue, 
+    connections_lock, groups_lock, pending_lock
+)
 from networking.utils import get_own_ip # Assuming utils.py exists
 
 logger = logging.getLogger(__name__)
@@ -15,10 +18,14 @@ async def send_group_create_message(groupname):
     own_ip = await get_own_ip()
     message = json.dumps({"type": "GROUP_CREATE", "groupname": groupname, "admin_ip": own_ip})
     logger.info(f"Broadcasting GROUP_CREATE for '{groupname}'")
-    for ws in connections.values():
-        if ws.state == State.OPEN:
-            try: await ws.send(message)
-            except Exception as e: logger.error(f"Failed send GROUP_CREATE to a peer: {e}")
+    
+    # Use lock when accessing connections
+    async with connections_lock:
+        for ws in connections.values():
+            if ws.state == State.OPEN:
+                try: await ws.send(message)
+                except Exception as e: logger.error(f"Failed send GROUP_CREATE to a peer: {e}")
+                
     # ADDED: Notify GUI (optional confirmation)
     await message_queue.put({"type": "log", "message": f"Group '{groupname}' created locally."})
     # Actual confirmation comes when members receive update
@@ -110,7 +117,10 @@ async def send_group_join_response(groupname, requester_ip, approved):
 async def send_group_update_message(groupname, members_ips_list, admin_ip=None):
     """Send group membership update to all current members."""
     # Ensure admin_ip is provided or get it from groups state
-    admin_ip = admin_ip or (groups.get(groupname, {}).get("admin"))
+    if not admin_ip:
+        async with groups_lock:
+            admin_ip = groups.get(groupname, {}).get("admin")
+            
     if not admin_ip:
         logger.error(f"Cannot send GROUP_UPDATE for '{groupname}': Admin IP unknown.")
         return
@@ -118,12 +128,15 @@ async def send_group_update_message(groupname, members_ips_list, admin_ip=None):
     message = json.dumps({"type": "GROUP_UPDATE", "groupname": groupname, "members": members_ips_list, "admin": admin_ip})
     logger.info(f"Sending GROUP_UPDATE for '{groupname}' to {len(members_ips_list)} members.")
     sent_count = 0
-    for member_ip in members_ips_list:
-        ws = connections.get(member_ip)
-        if ws and ws.state == State.OPEN:
-            try: await ws.send(message); sent_count += 1
-            except Exception as e: logger.error(f"Failed send GROUP_UPDATE to {member_ip}: {e}")
-        else: logger.warning(f"Cannot send GROUP_UPDATE: Member {member_ip} not connected.")
+    
+    async with connections_lock:
+        for member_ip in members_ips_list:
+            ws = connections.get(member_ip)
+            if ws and ws.state == State.OPEN:
+                try: await ws.send(message); sent_count += 1
+                except Exception as e: logger.error(f"Failed send GROUP_UPDATE to {member_ip}: {e}")
+            else: logger.warning(f"Cannot send GROUP_UPDATE: Member {member_ip} not connected.")
+            
     logger.debug(f"Sent GROUP_UPDATE to {sent_count} members.")
     # ADDED: Trigger local GUI update as well
     await message_queue.put({"type": "group_list_update"})

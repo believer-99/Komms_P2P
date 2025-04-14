@@ -107,6 +107,63 @@ async def cli_main():
          discovery.stop()
          logging.info("CLI Application fully shut down.")
 
+    from networking.shared_state import (
+        peer_usernames, peer_public_keys, shutdown_event, 
+        connections_lock, active_transfers_lock, peer_data_lock,
+        connections, active_transfers, peer_device_ids
+    )
+
+    try:
+        await asyncio.gather(*tasks)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logging.info("CLI shutdown triggered...")
+        shutdown_event.set()
+    finally:
+        logging.info("CLI initiating shutdown process...")
+        for task in tasks:
+            if not task.done(): task.cancel()
+        try:
+            await asyncio.wait(tasks, timeout=3.0)
+        except asyncio.TimeoutError:
+            logging.warning("CLI tasks did not finish gracefully within timeout.")
+
+        if server:
+            server.close()
+            await server.wait_closed()
+            logging.info("CLI WebSocket server closed.")
+
+        # Use locks for proper cleanup
+        async with connections_lock:
+            for ws in list(connections.values()):
+                if ws.state == State.OPEN:
+                    try: await ws.close()
+                    except Exception: pass
+            connections.clear()
+            
+        async with peer_data_lock:
+            peer_public_keys.clear()
+            peer_usernames.clear()
+            peer_device_ids.clear()
+            
+        async with active_transfers_lock:
+            active_transfers.clear()
+            
+        # Clear other state (these are new or might not exist in older versions)
+        try:
+            from networking.shared_state import outgoing_transfers_by_peer, connection_attempts
+            from networking.shared_state import connection_attempts_lock
+            
+            async with active_transfers_lock:
+                outgoing_transfers_by_peer.clear()
+                
+            async with connection_attempts_lock:
+                connection_attempts.clear()
+        except ImportError:
+            pass  # These might not exist in older versions
+
+        discovery.stop()
+        logging.info("CLI Application fully shut down.")
+
 
 if __name__ == "__main__":
     try:

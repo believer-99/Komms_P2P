@@ -9,6 +9,7 @@ import hashlib
 import netifaces
 import traceback
 import time
+import ssl # <-- Add ssl import
 from collections import defaultdict
 from PyQt6.QtCore import QEvent
 import threading
@@ -55,7 +56,8 @@ try:
     from networking.messaging import (
         handle_incoming_connection, receive_peer_messages, send_message_to_peers,
         maintain_peer_list, initialize_user_config,
-        connect_to_peer, disconnect_from_peer
+        connect_to_peer, disconnect_from_peer,
+        CERT_FILE, KEY_FILE # <-- Import cert/key paths if needed directly
     )
 
     from networking.shared_state import connections
@@ -107,7 +109,7 @@ except ImportError as e:
         async def send_broadcasts(self): await asyncio.sleep(3600)
         async def receive_broadcasts(self): await asyncio.sleep(3600)
         async def cleanup_stale_peers(self): await asyncio.sleep(3600)
-    async def initialize_user_config(): logger.info("Dummy Init User Config"); user_data.update({'original_username':'Dummy','device_id':'dummy123'})
+    async def initialize_user_config(): logger.info("Dummy Init User Config"); user_data.update({'original_username':'Dummy','device_id':'dummy123', 'key_path': 'dummy_key.pem', 'cert_path': 'dummy_cert.pem'}) # Add dummy paths
     def get_peer_display_name(ip): return f"DummyPeer_{ip or 'Unknown'}"
     def get_own_display_name(): return "You(dummy)"
     async def dummy_serve(*args, **kwargs): logger.warning("Dummy server running"); await asyncio.sleep(3600)
@@ -239,6 +241,7 @@ class Backend(QObject):
         super().__init__()
         self.discovery = None; self.loop = None; self.networking_tasks_futures = []; self.networking_tasks = []
         self.websocket_server = None; self.selected_file = None; self._is_running = False
+        self.ssl_context = None # Add placeholder for server SSL context
 
     def set_loop(self, loop): self.loop = loop
 
@@ -249,20 +252,52 @@ class Backend(QObject):
             return
         logger.info("Backend: Starting async components...")
         try:
+            # --- Create Server SSL Context ---
+            if 'cert_path' not in user_data or 'key_path' not in user_data:
+                 logger.error("SSL certificate or key path missing in user_data. Cannot start secure server.")
+                 raise RuntimeError("SSL cert/key configuration missing.")
+
+            cert_path = user_data['cert_path']
+            key_path = user_data['key_path']
+
+            if not os.path.exists(cert_path) or not os.path.exists(key_path):
+                 logger.error(f"SSL certificate ({cert_path}) or key ({key_path}) not found.")
+                 raise RuntimeError("SSL cert/key file not found.")
+
+            self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            try:
+                self.ssl_context.load_cert_chain(cert_path, key_path)
+                logger.info("SSL context loaded successfully.")
+            except ssl.SSLError as e:
+                 logger.error(f"Failed to load SSL cert/key: {e}. Check file paths and format.")
+                 raise RuntimeError(f"SSL configuration error: {e}")
+            # --------------------------------
+
             self.discovery = PeerDiscovery()
-            self.websocket_server = await websockets.serve(actual_handle_peer_connection, "0.0.0.0", 8765, ping_interval=None, max_size=10 * 1024 * 1024)
-            addr = self.websocket_server.sockets[0].getsockname() if self.websocket_server.sockets else "N/A"; logger.info(f"WebSocket server started on {addr}")
+            # Pass ssl context to websockets.serve
+            self.websocket_server = await websockets.serve(
+                actual_handle_peer_connection,
+                "0.0.0.0",
+                8765,
+                ping_interval=None,
+                max_size=10 * 1024 * 1024,
+                ssl=self.ssl_context # <-- Use SSL context
+            )
+            addr = self.websocket_server.sockets[0].getsockname() if self.websocket_server.sockets else "N/A"; logger.info(f"Secure WebSocket server (WSS) started on {addr}")
             tasks_to_create = [self._process_message_queue(), self.discovery.send_broadcasts(), self.discovery.receive_broadcasts(), self.discovery.cleanup_stale_peers(), update_transfer_progress(), maintain_peer_list(self.discovery)]
             def create_named_task(coro, name): return asyncio.create_task(coro, name=name)
             self.networking_tasks = [create_named_task(coro, name) for coro, name in zip(tasks_to_create, ["MsgQueueProcessor", "DiscoverySend", "DiscoveryRecv", "DiscoveryCleanup", "TransferProgress", "MaintainPeers"])]
-            logger.info("Backend: Core networking tasks created."); self.log_message_signal.emit("Network backend started."); self._is_running = True
+            logger.info("Backend: Core networking tasks created."); self.log_message_signal.emit("Secure network backend started."); self._is_running = True
             self.emit_peer_list_update(); self.emit_transfers_update(); self.emit_groups_update(); self.emit_invites_update(); self.emit_join_requests_update()
             await shutdown_event.wait()
         except OSError as e: logger.critical(f"NETWORK BIND ERROR: {e}", exc_info=True); self.log_message_signal.emit(f"FATAL: Could not start server port 8765. In use? ({e})"); self._is_running = False; shutdown_event.set()
+        except RuntimeError as e: # Catch specific runtime errors like SSL config issues
+             logger.critical(f"RUNTIME ERROR during startup: {e}", exc_info=True); self.log_message_signal.emit(f"FATAL: Startup failed - {e}"); self._is_running = False; shutdown_event.set()
         except Exception as e: logger.exception("Fatal error during async component startup"); self.log_message_signal.emit(f"Network error: {e}"); self._is_running = False; shutdown_event.set()
         finally:
             logger.info("Backend: _start_async_components finished or errored.")
             if self.websocket_server: self.websocket_server.close(); await self.websocket_server.wait_closed(); logger.info("WebSocket server stopped."); self.websocket_server = None
+            self.ssl_context = None # Clear context
 
     def start(self):
         if self._is_running: logger.warning("Backend start called while already running."); return
@@ -1030,8 +1065,7 @@ class MainWindow(QMainWindow):
                  return
             self.update_status_bar(f"Disconnecting from {target_display}...")
             self.backend.trigger_disconnect_from_peer(peer_ip)
-        else:
-             self.update_status_bar("No peer selected.")
+        else: self.update_status_bar("No peer selected.")
 
 
     def display_sent_message(self, recipient_username, message):

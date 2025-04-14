@@ -10,7 +10,10 @@ import time
 import websockets 
 from enum import Enum
 
-from networking.shared_state import active_transfers, shutdown_event, message_queue
+from networking.shared_state import (
+    active_transfers, shutdown_event, message_queue,
+    active_transfers_lock, outgoing_transfers_by_peer
+)
 from websockets.connection import State
 
 logger = logging.getLogger(__name__)
@@ -86,6 +89,17 @@ async def send_file(file_path, peers):
          await message_queue.put({"type": "log", "message": f"Send Error: Peer {peer_ip} not connected.", "level": logging.ERROR})
          return
 
+    # Check if there's already an outgoing transfer to this peer
+    async with active_transfers_lock:
+        if peer_ip in outgoing_transfers_by_peer:
+            existing_transfer_id = outgoing_transfers_by_peer[peer_ip]
+            await message_queue.put({
+                "type": "log", 
+                "message": f"Send Error: Already sending a file to this peer (Transfer ID: {existing_transfer_id[:8]}). Please wait for it to complete.", 
+                "level": logging.ERROR
+            })
+            return
+
     transfer_id = str(uuid.uuid4())
     file_name = os.path.basename(file_path)
     file_size = os.path.getsize(file_path)
@@ -102,7 +116,12 @@ async def send_file(file_path, peers):
 
     transfer.total_size = file_size
     transfer.expected_hash = file_hash
-    active_transfers[transfer_id] = transfer
+
+    # Register this as an outgoing transfer to this peer
+    async with active_transfers_lock:
+        outgoing_transfers_by_peer[peer_ip] = transfer_id
+        active_transfers[transfer_id] = transfer
+
     await message_queue.put({"type": "transfer_update"})
     await message_queue.put({"type": "log", "message": f"Starting send '{file_name}' to {peer_ip} (ID: {transfer_id[:8]})"})
 
@@ -185,6 +204,11 @@ async def send_file(file_path, peers):
             transfer.file_handle = None
         # Ensure final state update is sent to GUI
         await message_queue.put({"type": "transfer_update"})
+        
+        # Remove from outgoing transfers tracking
+        async with active_transfers_lock:
+            if peer_ip in outgoing_transfers_by_peer and outgoing_transfers_by_peer[peer_ip] == transfer_id:
+                outgoing_transfers_by_peer.pop(peer_ip, None)
 
 
 async def update_transfer_progress():
@@ -193,29 +217,48 @@ async def update_transfer_progress():
         try:
             transfers_to_remove = []
             updated = False
-            # Use items() for safe iteration if active_transfers might change during iteration
-            for transfer_id, transfer in list(active_transfers.items()):
-                if transfer.state in (TransferState.COMPLETED, TransferState.FAILED):
-                    transfers_to_remove.append(transfer_id)
-                    updated = True # Mark for full update
-                elif transfer.state == TransferState.IN_PROGRESS and transfer.total_size > 0:
-                    progress = int((transfer.transferred_size / transfer.total_size) * 100)
-                    await message_queue.put({
-                        "type": "transfer_progress",
-                        "transfer_id": transfer_id,
-                        "progress": progress
-                    })
-            if transfers_to_remove:
-                for tid in transfers_to_remove:
-                     # Check again before deleting, state might have changed
-                     if tid in active_transfers and active_transfers[tid].state in (TransferState.COMPLETED, TransferState.FAILED):
-                         del active_transfers[tid]
-                         logger.info(f"Removed finished/failed transfer {tid[:8]}")
-                # Send full update after removing items
-                await message_queue.put({"type": "transfer_update"})
-            elif updated: # If state changed but wasn't removed (e.g., paused)
-                 await message_queue.put({"type": "transfer_update"})
+            
+            # Use lock when accessing active_transfers
+            async with active_transfers_lock:
+                # Use items() for safe iteration if active_transfers might change during iteration
+                for transfer_id, transfer in list(active_transfers.items()):
+                    if transfer.state in (TransferState.COMPLETED, TransferState.FAILED):
+                        transfers_to_remove.append(transfer_id)
+                        updated = True # Mark for full update
+                    elif transfer.state == TransferState.IN_PROGRESS and transfer.total_size > 0:
+                        progress = int((transfer.transferred_size / transfer.total_size) * 100)
+                        await message_queue.put({
+                            "type": "transfer_progress",
+                            "transfer_id": transfer_id,
+                            "progress": progress
+                        })
+                
+                # Do removals under the same lock
+                if transfers_to_remove:
+                    for tid in transfers_to_remove:
+                        # Check again before deleting, state might have changed
+                        if tid in active_transfers and active_transfers[tid].state in (TransferState.COMPLETED, TransferState.FAILED):
+                            # Also clean up outgoing_transfers_by_peer
+                            transfer = active_transfers[tid]
+                            if transfer.direction == "send":
+                                peer_ip = transfer.peer_ip
+                                if peer_ip in outgoing_transfers_by_peer and outgoing_transfers_by_peer[peer_ip] == tid:
+                                    outgoing_transfers_by_peer.pop(peer_ip, None)
+                            
+                            del active_transfers[tid]
+                            logger.info(f"Removed finished/failed transfer {tid[:8]}")
+                    
+                    # Send full update after removing items
+                    await message_queue.put({"type": "transfer_update"})
+                elif updated: # If state changed but wasn't removed (e.g., paused)
+                    await message_queue.put({"type": "transfer_update"})
+
             await asyncio.sleep(1)
-        except asyncio.CancelledError: logger.info("update_transfer_progress task cancelled."); break
-        except Exception as e: logger.exception(f"Error in update_transfer_progress: {e}"); await asyncio.sleep(5)
+        except asyncio.CancelledError: 
+            logger.info("update_transfer_progress task cancelled.")
+            break
+        except Exception as e: 
+            logger.exception(f"Error in update_transfer_progress: {e}")
+            await asyncio.sleep(5)
+            
     logger.info("update_transfer_progress stopped.")
