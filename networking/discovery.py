@@ -1,18 +1,15 @@
-# networking/discovery.py
 import asyncio
 import socket
 import json
 import logging
 import netifaces
-import time # Use time for simple timestamping
+import time 
 
-# MODIFIED: Import message_queue for updates
 from networking.utils import get_own_ip
 from networking.shared_state import user_data, shutdown_event, message_queue
 
-logger = logging.getLogger(__name__) # Use module-specific logger
+logger = logging.getLogger(__name__) 
 
-# MODIFIED: Use DatagramProtocol for receiving
 class DiscoveryProtocol(asyncio.DatagramProtocol):
     """Protocol for handling incoming discovery UDP datagrams."""
     def __init__(self, discovery_instance):
@@ -24,7 +21,6 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         self.transport = transport; logger.debug("Discovery receive protocol started.")
     def datagram_received(self, data, addr):
         sender_ip = addr[0]
-        # Use create_task for non-blocking processing
         asyncio.create_task(self.discovery.handle_received_datagram(data, sender_ip))
     def error_received(self, exc): logger.error(f"Discovery protocol error: {exc}")
     def connection_lost(self, exc): logger.debug(f"Discovery protocol connection lost: {exc}")
@@ -56,7 +52,6 @@ class PeerDiscovery:
     async def _check_and_notify_peer_update(self):
         """Checks if peer list changed and puts update on queue."""
         try:
-            # Simple check: compare JSON representations (might not be most efficient)
             current_state_json = json.dumps(self.peer_list, sort_keys=True)
             if current_state_json != self._last_peer_list_state_json:
                 logger.debug("Peer list changed, putting update on queue.")
@@ -68,7 +63,7 @@ class PeerDiscovery:
     async def send_broadcasts(self):
         """Periodically sends broadcast messages."""
         if not self._broadcast_sock: await self._initialize_resources()
-        if not self.running: return # Don't run if init failed
+        if not self.running: return 
 
         sock = self._broadcast_sock
         sent_at_least_once = False
@@ -76,7 +71,7 @@ class PeerDiscovery:
             while self.running and not shutdown_event.is_set():
                 sent_this_round = False
                 try:
-                    if self.own_ip is None: self.own_ip = await get_own_ip() # Get IP if missing
+                    if self.own_ip is None: self.own_ip = await get_own_ip() 
                     username = user_data.get("original_username", "unknown")
                     message = json.dumps({"ip": self.own_ip, "username": username}).encode()
                     for interface in netifaces.interfaces():
@@ -136,13 +131,11 @@ class PeerDiscovery:
         try:
             message = json.loads(data.decode())
             peer_ip = message["ip"]; username = message["username"]
-            # Update peer list and check if notification needed
             if peer_ip not in self.peer_list or self.peer_list[peer_ip][0] != username:
                 logger.info(f"Discovered/Updated peer: {username} at {peer_ip}")
-                self.peer_list[peer_ip] = (username, time.time()) # Use simple time
-                await self._check_and_notify_peer_update() # Notify GUI of change
+                self.peer_list[peer_ip] = (username, time.time()) 
+                await self._check_and_notify_peer_update() 
             else:
-                # Just update timestamp if username is the same
                 self.peer_list[peer_ip] = (username, time.time())
 
         except (json.JSONDecodeError, KeyError, UnicodeDecodeError) as e:
@@ -159,12 +152,12 @@ class PeerDiscovery:
                     stale_peers = [ip for ip, (_, last) in self.peer_list.items() if current_time - last > self.cleanup_interval]
                     for peer_ip in stale_peers:
                         if peer_ip in self.peer_list:
-                            removed_username = self.peer_list.pop(peer_ip)[0] # pop returns value
+                            removed_username = self.peer_list.pop(peer_ip)[0] 
                             logger.info(f"Removed stale peer: {removed_username} ({peer_ip})")
                             stale_found = True
-                    if stale_found: await self._check_and_notify_peer_update() # Notify GUI after cleanup
+                    if stale_found: await self._check_and_notify_peer_update() 
                 except Exception as e: logger.exception(f"Error during stale peer cleanup: {e}")
-                try: await asyncio.wait_for(shutdown_event.wait(), timeout=self.cleanup_interval / 2) # Check more frequently
+                try: await asyncio.wait_for(shutdown_event.wait(), timeout=self.cleanup_interval / 2) 
                 except asyncio.TimeoutError: continue
                 break # Shutdown triggered
         except asyncio.CancelledError: logger.info("cleanup_stale_peers task cancelled.")
@@ -176,4 +169,3 @@ class PeerDiscovery:
         self.running = False
         if self._broadcast_sock:
             self._broadcast_sock.close(); self._broadcast_sock = None; logger.debug("Broadcast sending socket closed.")
-        # Transport closing handled in receive_broadcasts finally block

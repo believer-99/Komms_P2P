@@ -9,9 +9,9 @@ import hashlib
 import netifaces
 import traceback
 import time
-from collections import defaultdict # For chat histories
-from PyQt6.QtCore import QEvent # Ensure QEvent is imported
-import threading # Make sure threading is imported
+from collections import defaultdict
+from PyQt6.QtCore import QEvent
+import threading
 
 try:
     from cryptography.hazmat.primitives import serialization, hashes
@@ -21,7 +21,6 @@ except ImportError as crypto_err:
     print("Please install it: pip install cryptography")
     sys.exit(1)
 
-# --- PyQt Imports ---
 try:
     from PyQt6.QtCore import (QCoreApplication, QObject, QRunnable, QSettings,
     QThreadPool, pyqtSignal, pyqtSlot, Qt, QThread, QTimer, QSize)
@@ -38,7 +37,6 @@ except ImportError as pyqt_err:
     sys.exit(1)
 
 
-# --- Logging Setup (Early) --- #
 log_formatter = logging.Formatter("%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s")
 root_logger = logging.getLogger()
 console_handler = logging.StreamHandler(sys.stdout)
@@ -49,36 +47,34 @@ logging.getLogger("websockets").setLevel(logging.WARNING)
 logging.getLogger("asyncio").setLevel(logging.INFO)
 logger = logging.getLogger("P2PChatApp")
 
-# --- ACTUAL Networking Imports --- #
 try:
     logger.debug("Attempting to import networking modules...")
     from networking.discovery import PeerDiscovery
 
-    # --- Corrected Imports ---
-    # Import core messaging functions from networking.messaging
+
     from networking.messaging import (
         handle_incoming_connection, receive_peer_messages, send_message_to_peers,
-        maintain_peer_list, initialize_user_config, # Moved initialize_user_config here too
-        connect_to_peer, disconnect_from_peer # Moved connect/disconnect here
+        maintain_peer_list, initialize_user_config,
+        connect_to_peer, disconnect_from_peer
     )
-    # Import connection state directly if needed (or rely on messaging module using it)
+
     from networking.shared_state import connections
 
     import websockets
-    # Assuming handle_peer_connection uses the functions above, import from main is okay
+
     from main import handle_peer_connection as actual_handle_peer_connection
     logger.debug("Imported handle_peer_connection")
 
-    # Import utils functions directly from networking.utils
+
     from networking.utils import (
          get_peer_display_name, resolve_peer_target, get_own_display_name
     )
-    # Import group functions directly from networking.groups
+
     from networking.groups import (
          send_group_create_message, send_group_invite_message, send_group_invite_response,
          send_group_join_request, send_group_join_response, send_group_update_message
     )
-    # --- End Corrected Imports ---
+
 
     from networking.file_transfer import (
         send_file, FileTransfer, TransferState, compute_hash, update_transfer_progress
@@ -94,7 +90,7 @@ try:
 
 
 except ImportError as e:
-    # --- Dummy Fallbacks (Minimal Definitions) --- #
+
     print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
     print(f"ERROR: Could not import networking modules: {e}")
     print(f"       Running GUI in dummy mode with limited functionality.")
@@ -126,10 +122,9 @@ except ImportError as e:
     async def send_group_join_response(*a, **kw): logger.warning("Dummy Join Response"); await asyncio.sleep(0.1)
     async def update_transfer_progress(): await asyncio.sleep(3600)
     async def maintain_peer_list(*a, **kw): await asyncio.sleep(3600)
-    # --- End Dummy Fallbacks --- #
 
 
-# --- Worker and Signals --- #
+
 class WorkerSignals(QObject):
     finished = pyqtSignal()
     error = pyqtSignal(tuple)
@@ -137,7 +132,7 @@ class WorkerSignals(QObject):
 
 class Worker(QRunnable):
     """Executes a function in a separate thread using QThreadPool."""
-    def __init__(self, fn, *args, **kwargs): # *** CORRECTED __init__ ***
+    def __init__(self, fn, *args, **kwargs):
         super().__init__()
         self.fn = fn
         self.args = args
@@ -164,76 +159,75 @@ class Worker(QRunnable):
         finally: self.signals.finished.emit()
 
 
-# --- Custom Events for Thread-Safe Signal Emission --- #
+
 class PeerUpdateEvent(QEvent):
     TypeId = QEvent.Type(QEvent.Type.User + 1)
-    def __init__(self, peers_dict): # *** CORRECTED __init__ ***
+    def __init__(self, peers_dict):
         super().__init__(PeerUpdateEvent.TypeId)
         self.peers = peers_dict
 
 class TransferUpdateEvent(QEvent):
     TypeId = QEvent.Type(QEvent.Type.User + 2)
-    def __init__(self, transfers_dict): # *** CORRECTED __init__ ***
+    def __init__(self, transfers_dict):
         super().__init__(TransferUpdateEvent.TypeId)
         self.transfers = transfers_dict
 
 class GroupUpdateEvent(QEvent):
     TypeId = QEvent.Type(QEvent.Type.User + 3)
-    def __init__(self, groups_dict): # *** CORRECTED __init__ ***
+    def __init__(self, groups_dict):
         super().__init__(GroupUpdateEvent.TypeId)
         self.groups = groups_dict
 
 class InviteUpdateEvent(QEvent):
     TypeId = QEvent.Type(QEvent.Type.User + 4)
-    def __init__(self, invites_list): # *** CORRECTED __init__ ***
+    def __init__(self, invites_list):
         super().__init__(InviteUpdateEvent.TypeId)
         self.invites = invites_list
 
 class JoinRequestUpdateEvent(QEvent):
     TypeId = QEvent.Type(QEvent.Type.User + 5)
-    def __init__(self, requests_dict): # *** CORRECTED __init__ ***
+    def __init__(self, requests_dict):
         super().__init__(JoinRequestUpdateEvent.TypeId)
         self.requests = requests_dict
 
 class LogMessageEvent(QEvent):
     TypeId = QEvent.Type(QEvent.Type.User + 6)
-    def __init__(self, msg): # *** CORRECTED __init__ ***
+    def __init__(self, msg):
         super().__init__(LogMessageEvent.TypeId)
         self.message = msg
 
 class ConnectionRequestEvent(QEvent):
     TypeId = QEvent.Type(QEvent.Type.User + 7)
-    def __init__(self, name, base): # *** CORRECTED __init__ ***
+    def __init__(self, name, base):
         super().__init__(ConnectionRequestEvent.TypeId)
         self.req_display_name = name
         self.base_username = base
 
 class MessageReceivedEvent(QEvent):
     TypeId = QEvent.Type(QEvent.Type.User + 8)
-    def __init__(self, sender, content): # *** CORRECTED __init__ ***
+    def __init__(self, sender, content):
         super().__init__(MessageReceivedEvent.TypeId)
         self.sender = sender
         self.content = content
 
 class TransferProgressEvent(QEvent):
     TypeId = QEvent.Type(QEvent.Type.User + 9)
-    def __init__(self, tid, prog): # *** CORRECTED __init__ ***
+    def __init__(self, tid, prog):
         super().__init__(TransferProgressEvent.TypeId)
         self.transfer_id = tid
         self.progress = prog
 
 class ConnectionStatusEvent(QEvent):
     TypeId = QEvent.Type(QEvent.Type.User + 10)
-    def __init__(self, ip, status): # *** CORRECTED __init__ ***
+    def __init__(self, ip, status):
         super().__init__(ConnectionStatusEvent.TypeId)
         self.peer_ip = ip
         self.is_connected = status
-# --- End Custom Events --- #
 
 
-# --- Backend Logic Controller --- #
+
 class Backend(QObject):
-    # Signals
+
     message_received_signal = pyqtSignal(str, str); log_message_signal = pyqtSignal(str)
     peer_list_updated_signal = pyqtSignal(dict); transfers_updated_signal = pyqtSignal(dict)
     connection_status_signal = pyqtSignal(str, bool); connection_request_signal = pyqtSignal(str, str)
@@ -292,7 +286,7 @@ class Backend(QObject):
         logger.info("Backend: Stop sequence initiated."); self.log_message_signal.emit("Shutting down network...")
         self._is_running = False
         if self.loop and not shutdown_event.is_set(): self.loop.call_soon_threadsafe(shutdown_event.set); logger.info("Backend: Shutdown event set via call_soon_threadsafe.")
-        elif not self.loop: logger.warning("Backend stop: Loop not available."); shutdown_event.set() # Set anyway
+        elif not self.loop: logger.warning("Backend stop: Loop not available."); shutdown_event.set()
         else: logger.info("Backend: Shutdown event already set.")
         if self.discovery:
             try: self.discovery.stop(); logger.info("PeerDiscovery stopped.")
@@ -378,8 +372,8 @@ class Backend(QObject):
             worker = Worker(coro_func, *args, loop=self.loop)
             def on_error(err): self.log_message_signal.emit(f"{error_msg_prefix}: {err[1]}")
             def on_finished():
-                # We might need to trigger a state refresh after actions complete
-                self.emit_peer_list_update(); self.emit_groups_update() # Example refresh
+
+                self.emit_peer_list_update(); self.emit_groups_update()
                 if success_msg: self.log_message_signal.emit(success_msg)
             worker.signals.error.connect(on_error); worker.signals.finished.connect(on_finished)
             QThreadPool.globalInstance().start(worker); return True
@@ -432,12 +426,11 @@ class Backend(QObject):
         return super().event(event)
 
 
-# --- Networking Thread --- #
-# --- Networking Thread --- #
+
 class NetworkingThread(QThread):
     """Manages the asyncio event loop."""
     loop_ready = pyqtSignal(object)
-    thread_finished = pyqtSignal() # Important for clean shutdown signalling
+    thread_finished = pyqtSignal()
 
     def __init__(self, backend_ref):
         super().__init__()
@@ -446,54 +439,51 @@ class NetworkingThread(QThread):
 
     def run(self):
         logger.info("NetworkingThread: Starting...")
-        # Set thread names for easier debugging
-        thread_name = f"AsyncioLoop-{threading.get_ident()}" # Use Python thread ID
-        # self.thread().setObjectName(thread_name) # Naming QThread doesn't always show up well
-        threading.current_thread().name = thread_name # Name the Python thread
+
+        thread_name = f"AsyncioLoop-{threading.get_ident()}"
+
+        threading.current_thread().name = thread_name
 
         try:
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
             self.backend.set_loop(self.loop)
-            # Don't emit loop_ready yet
 
-            # Initialize user config first *synchronously within the loop's context*
+
             if NETWORKING_AVAILABLE:
                  try:
                       logger.info("NetworkingThread: Initializing user config...")
                       self.loop.run_until_complete(initialize_user_config())
                       logger.info("NetworkingThread: User config initialized.")
-                      # --- Schedule backend start *within* the loop --- # <--- CHANGE HERE
+
                       logger.info("NetworkingThread: Scheduling backend start...")
-                      # Use create_task as the loop is set for this thread context
+
                       self.loop.create_task(self.backend._start_async_components(), name="BackendStart")
-                      # --- /Schedule --- #
+
                  except Exception as init_err:
                       logger.exception("NetworkingThread: Failed to initialize user config.")
-                      # Use thread-safe signal emission via QCoreApplication event posting
-                      QCoreApplication.instance().postEvent(self.backend, LogMessageEvent(f"Config Error: {init_err}"))
-                      # Stop thread if config fails
-                      raise init_err
-            elif not NETWORKING_AVAILABLE: # Dummy mode init
-                 self.loop.run_until_complete(initialize_user_config()) # Run dummy init
-                 # Schedule dummy backend start if needed, or just let it idle
-                 # self.loop.create_task(self.backend._start_async_components(), name="BackendStart") # Optional dummy start
 
-            # Emit loop_ready signal AFTER scheduling backend start
-            self.loop_ready.emit(self.loop) # <-- MOVED HERE
+                      QCoreApplication.instance().postEvent(self.backend, LogMessageEvent(f"Config Error: {init_err}"))
+
+                      raise init_err
+            elif not NETWORKING_AVAILABLE:
+                 self.loop.run_until_complete(initialize_user_config())
+
+
+            self.loop_ready.emit(self.loop)
 
             logger.info("NetworkingThread: Starting event loop (run_forever)...")
             self.loop.run_forever()
-            # --- run_forever has exited ---
+
             logger.info("NetworkingThread: run_forever has exited.")
 
         except Exception as e:
              logger.exception(f"NetworkingThread Error in run(): {e}")
-             # Optionally signal GUI about fatal thread error
+
              QCoreApplication.instance().postEvent(self.backend, LogMessageEvent(f"FATAL Network Thread Error: {e}"))
         finally:
             logger.info("NetworkingThread: Entering finally block...")
-            # --- Graceful Loop Shutdown ---
+
             if self.loop and (self.loop.is_running() or not self.loop.is_closed()):
                  logger.info("NetworkingThread: Running shutdown_tasks...")
                  try:
@@ -501,7 +491,7 @@ class NetworkingThread(QThread):
                  except RuntimeError as re: logger.warning(f"NT: Error running shutdown_tasks: {re}")
                  except Exception as sd_err: logger.exception(f"NT: Unexpected error during shutdown_tasks: {sd_err}")
 
-            # --- Close Loop ---
+
             if self.loop and not self.loop.is_closed():
                  logger.info("NetworkingThread: Closing loop...")
                  self.loop.close()
@@ -533,7 +523,7 @@ class NetworkingThread(QThread):
         elif self.loop: logger.warning("NetworkingThread: Stop requested but loop not running.")
         else: logger.warning("NetworkingThread: Stop requested but loop is None.")
 
-# --- Login Window --- #
+
 class LoginWindow(QMainWindow):
     def __init__(self):
         super().__init__(); self.settings = QSettings("P2PChat", "Login"); self.setWindowTitle("P2P Chat - Login"); self.setGeometry(200, 200, 380, 280); self.setWindowIcon(QIcon.fromTheme("network-transmit-receive"))
@@ -544,9 +534,8 @@ class LoginWindow(QMainWindow):
     def login_or_register(self):
         username = self.username_input.text().strip()
         if username:
-            # Set username in user_data *before* MainWindow uses it
-            # This is slightly problematic if user config needs to load first,
-            # but essential for Backend triggers to have the username.
+
+
             user_data["original_username"] = username
             logger.info(f"Set username for backend: {username}")
 
@@ -559,13 +548,13 @@ class LoginWindow(QMainWindow):
         self.setStyleSheet(f"""QMainWindow {{ background-color: {dark_bg}; color: {text_color}; font-family: {font_family}; }} QWidget {{ color: {text_color}; font-size: 13px; }} QLabel {{ font-size: 14px; padding-bottom: 5px; }} QLineEdit {{ background-color: {light_bg}; border: 1px solid {dark_border}; border-radius: 5px; padding: 10px; font-size: 14px; color: {text_color}; }} QLineEdit:focus {{ border: 1px solid {accent_color}; }} QCheckBox {{ font-size: 12px; color: {dim_text_color}; padding-top: 5px; }} QCheckBox::indicator {{ width: 16px; height: 16px; }} QCheckBox::indicator:unchecked {{ border: 1px solid {medium_border}; background-color: {light_bg}; border-radius: 3px; }} QCheckBox::indicator:checked {{ background-color: {accent_color}; border: 1px solid {accent_hover}; border-radius: 3px; }} QPushButton#login_button {{ background-color: {accent_color}; color: white; border: none; border-radius: 5px; padding: 10px 25px; font-size: 14px; font-weight: bold; min-width: 120px; }} QPushButton#login_button:hover {{ background-color: {accent_hover}; }} QPushButton#login_button:pressed {{ background-color: {accent_pressed}; }} QLabel#error_label {{ color: #FFAAAA; font-size: 12px; padding-top: 10px; font-weight: bold; qproperty-alignment: 'AlignCenter'; }}""")
 
 
-# --- MainWindow --- #
+
 class MainWindow(QMainWindow):
     def __init__(self, username):
         super().__init__(); self.username = username; self.current_chat_peer_username = None; self.chat_widgets = {}; self.chat_histories = defaultdict(list); logger.info("MainWindow: Initializing Backend and NetworkingThread..."); self.backend = Backend(); self.network_thread = NetworkingThread(self.backend); logger.info("MainWindow: Backend and NetworkingThread initialized.")
-        # Username already set in LoginWindow
+
         own_display_name = get_own_display_name() if NETWORKING_AVAILABLE else f"{self.username}(dummy)"; self.setWindowTitle(f"P2P Chat - {own_display_name}"); self.setGeometry(100, 100, 1100, 800); self.selected_file = None
-        self.transfer_progress_cache = {} 
+        self.transfer_progress_cache = {}
         self.central_widget = QWidget(); self.setCentralWidget(self.central_widget); main_layout = QVBoxLayout(self.central_widget); main_layout.setContentsMargins(0, 0, 0, 0); main_layout.setSpacing(0)
         self.tab_widget = QTabWidget(); self.chat_tab = QWidget(); self.transfers_tab = QWidget(); self.peers_tab = QWidget(); self.groups_tab = QWidget()
         self.tab_widget.addTab(self.chat_tab, "Chat"); self.tab_widget.addTab(self.transfers_tab, "Transfers"); self.tab_widget.addTab(self.peers_tab, "Network Peers"); self.tab_widget.addTab(self.groups_tab, "Groups")
@@ -583,10 +572,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         logger.info("MainWindow: Close event triggered."); self.update_status_bar("Shutting down...")
-        # self.ui_update_timer.stop() # Stop timer if used
+
         self.backend.stop(); self.network_thread.request_stop()
         logger.info("MainWindow: Shutdown requested. Waiting for network thread to finish (accepting close event).")
-        event.accept() # Accept immediately to avoid unresponsive window
+        event.accept()
 
     def startNetwork(self):
         logger.info("MainWindow: Starting network thread...")
@@ -595,16 +584,16 @@ class MainWindow(QMainWindow):
 
     def on_network_thread_finished(self):
          logger.info("MainWindow: Detected NetworkingThread finished."); self.update_status_bar("Network stopped.")
-         # QCoreApplication.instance().quit() # Uncomment to force app close
 
-    def on_backend_stopped(self): logger.info("MainWindow: Backend signalled stopped.") # Might be redundant
+
+    def on_backend_stopped(self): logger.info("MainWindow: Backend signalled stopped.")
 
     def setup_chat_tab(self):
         layout=QHBoxLayout(self.chat_tab);layout.setContentsMargins(0,0,0,0);layout.setSpacing(0);splitter=QSplitter(Qt.Orientation.Horizontal);layout.addWidget(splitter);self.chat_peer_list=QListWidget();self.chat_peer_list.setObjectName("chat_peer_list");self.chat_peer_list.setFixedWidth(250);self.chat_peer_list.currentItemChanged.connect(self.on_chat_peer_selected);splitter.addWidget(self.chat_peer_list);right_pane_widget=QWidget();right_pane_layout=QVBoxLayout(right_pane_widget);right_pane_layout.setContentsMargins(10,10,10,10);right_pane_layout.setSpacing(10);self.chat_stack=QStackedWidget();right_pane_layout.addWidget(self.chat_stack,1);self.no_chat_selected_widget=QLabel("Select a peer to start chatting.");self.no_chat_selected_widget.setAlignment(Qt.AlignmentFlag.AlignCenter);self.no_chat_selected_widget.setStyleSheet("color: #888;");self.chat_stack.addWidget(self.no_chat_selected_widget);splitter.addWidget(right_pane_widget);splitter.setSizes([250,750]);self.update_chat_peer_list()
 
     def create_chat_widget(self, peer_username):
         if peer_username in self.chat_widgets:
-            # logger.debug(f"Chat widget already exists for {peer_username}") # Optional debug
+
             return self.chat_widgets[peer_username]['widget']
 
         logger.info(f"Creating chat widget for {peer_username}")
@@ -629,13 +618,13 @@ class MainWindow(QMainWindow):
             send_btn.clicked.connect(lambda: self.send_chat_message(peer_username))
             msg_input.returnPressed.connect(lambda: self.send_chat_message(peer_username))
 
-            # Store widget references BEFORE populating history
+
             self.chat_widgets[peer_username]={'widget':chat_widget,'history':history,'input':msg_input,'send_btn':send_btn}
 
-            # Populate history *after* adding to dict
+
             logger.debug(f"Populating history for {peer_username}")
             history.clear()
-            # Use try-except during history population as well
+
             try:
                  for msg_sender, msg_content in self.chat_histories.get(peer_username,[]):
                      self._append_message_to_history(history, msg_sender, msg_content)
@@ -646,16 +635,16 @@ class MainWindow(QMainWindow):
             return chat_widget
 
         except Exception as e:
-             # Log any exception during widget creation
+
              logger.exception(f"CRITICAL ERROR creating chat widget for {peer_username}: {e}")
-             # Remove potentially partially created entry if error occurred
+
              if peer_username in self.chat_widgets:
                  del self.chat_widgets[peer_username]
-             return None # Indicate failure
+             return None
     def on_chat_peer_selected(self, current, previous):
         if current:
             peer_username = current.data(Qt.ItemDataRole.UserRole)
-            # Ensure peer_username is valid before proceeding
+
             if not peer_username:
                 logger.error("Selected chat item has invalid data.")
                 self.current_chat_peer_username = None
@@ -665,29 +654,29 @@ class MainWindow(QMainWindow):
             self.current_chat_peer_username = peer_username
             logger.info(f"Chat peer selected: {peer_username}")
 
-            # Get or create the widget
-            widget_to_show = self.create_chat_widget(peer_username) # Creates if needed
 
-            # Add widget to stack *only if* it's not already there
+            widget_to_show = self.create_chat_widget(peer_username)
+
+
             if widget_to_show and self.chat_stack.indexOf(widget_to_show) < 0:
                 self.chat_stack.addWidget(widget_to_show)
 
-            # Set current widget (use placeholder if creation failed)
+
             if widget_to_show:
                  self.chat_stack.setCurrentWidget(widget_to_show)
-                 # Give focus to the input field when chat is selected
+
                  if peer_username in self.chat_widgets:
                      self.chat_widgets[peer_username]['input'].setFocus()
             else:
                  logger.error(f"Could not get or create chat widget for {peer_username}")
                  self.chat_stack.setCurrentWidget(self.no_chat_selected_widget)
 
-            # Mark as read (reset bold)
+
             font = current.font()
             if font.bold():
                  font.setBold(False)
                  current.setFont(font)
-        else: # No item selected
+        else:
             self.current_chat_peer_username = None
             self.chat_stack.setCurrentWidget(self.no_chat_selected_widget)
 
@@ -700,61 +689,60 @@ class MainWindow(QMainWindow):
     def setup_groups_tab(self):
         main_layout=QHBoxLayout(self.groups_tab);main_layout.setSpacing(10);main_layout.setContentsMargins(15,15,15,15);left_column=QVBoxLayout();left_column.setSpacing(10);main_layout.addLayout(left_column,1);groups_label=QLabel("Your Groups:");groups_label.setStyleSheet("font-weight: bold;");self.groups_list=QListWidget();self.groups_list.setObjectName("groups_list");left_column.addWidget(groups_label);left_column.addWidget(self.groups_list,1);create_gb_layout=QVBoxLayout();create_gb_layout.setSpacing(5);create_label=QLabel("Create New Group:");create_label.setStyleSheet("font-weight: bold;");self.create_group_input=QLineEdit();self.create_group_input.setPlaceholderText("New group name...");self.create_group_button=QPushButton("Create Group");self.create_group_button.setObjectName("create_group_button");create_gb_layout.addWidget(create_label);create_gb_layout.addWidget(self.create_group_input);create_gb_layout.addWidget(self.create_group_button);left_column.addLayout(create_gb_layout);middle_column=QVBoxLayout();middle_column.setSpacing(10);main_layout.addLayout(middle_column,2);self.selected_group_label=QLabel("Selected Group: None");self.selected_group_label.setStyleSheet("font-weight: bold; font-size: 15px;");members_label=QLabel("Members:");members_label.setStyleSheet("font-weight: bold;");self.group_members_list=QListWidget();self.group_members_list.setObjectName("group_members_list");self.admin_section_widget=QWidget();admin_layout=QVBoxLayout(self.admin_section_widget);admin_layout.setContentsMargins(0,5,0,0);admin_layout.setSpacing(5);jr_label=QLabel("Pending Join Requests (Admin Only):");jr_label.setStyleSheet("font-weight: bold;");self.join_requests_list=QListWidget();self.join_requests_list.setObjectName("join_requests_list");jr_button_layout=QHBoxLayout();jr_button_layout.addStretch();self.approve_join_button=QPushButton("Approve Join");self.approve_join_button.setObjectName("approve_join_button");self.deny_join_button=QPushButton("Deny Join");self.deny_join_button.setObjectName("deny_join_button");jr_button_layout.addWidget(self.approve_join_button);jr_button_layout.addWidget(self.deny_join_button);admin_layout.addWidget(jr_label);admin_layout.addWidget(self.join_requests_list,1);admin_layout.addLayout(jr_button_layout);self.admin_section_widget.setVisible(False);middle_column.addWidget(self.selected_group_label);middle_column.addWidget(members_label);middle_column.addWidget(self.group_members_list,1);middle_column.addWidget(self.admin_section_widget);right_column=QVBoxLayout();right_column.setSpacing(10);main_layout.addLayout(right_column,1);invites_label=QLabel("Pending Invitations:");invites_label.setStyleSheet("font-weight: bold;");self.pending_invites_list=QListWidget();self.pending_invites_list.setObjectName("pending_invites_list");invite_button_layout=QHBoxLayout();invite_button_layout.addStretch();self.accept_invite_button=QPushButton("Accept Invite");self.accept_invite_button.setObjectName("accept_invite_button");self.decline_invite_button=QPushButton("Decline Invite");self.decline_invite_button.setObjectName("decline_invite_button");invite_button_layout.addWidget(self.accept_invite_button);invite_button_layout.addWidget(self.decline_invite_button);right_column.addWidget(invites_label);right_column.addWidget(self.pending_invites_list,1);right_column.addLayout(invite_button_layout);self.groups_list.currentItemChanged.connect(self.on_group_selected);self.pending_invites_list.currentItemChanged.connect(self.on_invite_selected);self.join_requests_list.currentItemChanged.connect(self.on_join_request_selected);self.create_group_button.clicked.connect(self.create_group_action);self.accept_invite_button.clicked.connect(self.accept_invite_action);self.decline_invite_button.clicked.connect(self.decline_invite_action);self.approve_join_button.clicked.connect(self.approve_join_action);self.deny_join_button.clicked.connect(self.deny_join_action);self.accept_invite_button.setEnabled(False);self.decline_invite_button.setEnabled(False);self.approve_join_button.setEnabled(False);self.deny_join_button.setEnabled(False);self.update_groups_display({});self.update_invites_display([]);self.update_join_requests_display({})
 
-    # --- Slot Methods for UI Updates ---
+
     @pyqtSlot(str)
     def update_status_bar(self, message): self.status_bar.showMessage(message, 5000)
 
     @pyqtSlot(dict)
     def update_peer_list_display(self, peers_status):
-        # NOTE: The incoming peers_status is assumed to be from the discovery list now:
-        
+
 
         logger.debug(f"Updating network peer list display with {len(peers_status)} discovered peers.")
         current_sel_data = self.network_peer_list.currentItem().data(Qt.ItemDataRole.UserRole) if self.network_peer_list.currentItem() else None
         self.network_peer_list.clear(); new_sel_item = None
         own_ip = getattr(self.backend.discovery, 'own_ip', None) if NETWORKING_AVAILABLE and self.backend.discovery else "127.0.0.1"
 
-        # The keys of peers_status are the IPs from discovery.peer_list
+
         for ip, peer_info in peers_status.items():
-            if ip == own_ip: continue # Skip self
+            if ip == own_ip: continue
 
-            # --- *** MODIFIED LOGIC *** ---
-            discovered_username = peer_info[0] # Get username directly from discovery data
-            is_connected = ip in connections # Check current connection status
 
-            # Determine display name: Use discovery username, add device ID ONLY if connected
+            discovered_username = peer_info[0]
+            is_connected = ip in connections
+
+
             display_name = discovered_username
             if is_connected:
-                # If connected, try getting the potentially more complete display name
-                # which might include the device ID suffix if needed.
-                display_name = get_peer_display_name(ip) # Use the function for connected peers
-            elif not discovered_username: # Handle case where discovery somehow had no username
+
+
+                display_name = get_peer_display_name(ip)
+            elif not discovered_username:
                  display_name = "Unknown"
-            # --- *** END MODIFIED LOGIC *** ---
+
 
             status = " (Connected)" if is_connected else " (Discovered)"
             item_text = f"{display_name} [{ip}]{status}"
             item = QListWidgetItem(item_text)
-            # Store consistent data for actions
+
             item_data = {"ip": ip, "username": discovered_username, "connected": is_connected, "display_name": display_name}
             item.setData(Qt.ItemDataRole.UserRole, item_data)
             self.network_peer_list.addItem(item)
 
-            # Reselection logic
+
             if current_sel_data and current_sel_data.get("ip") == ip:
                 new_sel_item = item
 
-        if not peers_status: # Add placeholder if list is empty (after filtering self)
+        if not peers_status:
              item = QListWidgetItem("No other peers discovered")
              item.setForeground(QColor("#888"))
              item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
              self.network_peer_list.addItem(item)
 
         if new_sel_item: self.network_peer_list.setCurrentItem(new_sel_item)
-        else: self.on_network_peer_selection_changed(None, None) # Clear selection effects
+        else: self.on_network_peer_selection_changed(None, None)
 
-        # NOTE: We still call update_chat_peer_list here, which correctly
-        # only adds currently *connected* peers based on the `connections` dict.
+
+
         self.update_chat_peer_list()
 
     def update_chat_peer_list(self):
@@ -773,52 +761,51 @@ class MainWindow(QMainWindow):
               self.current_chat_peer_username = None; self.chat_stack.setCurrentWidget(self.no_chat_selected_widget)
 
     @pyqtSlot(dict)
-       
+
     def update_transfer_list_display(self, transfers_info):
         logger.debug(f"Updating transfer list display with {len(transfers_info)} items.")
         current_sel_id = self.transfer_list.currentItem().data(Qt.ItemDataRole.UserRole) if self.transfer_list.currentItem() else None
         self.transfer_list.clear(); new_sel_item = None
 
-        # Keep track of current IDs to clean cache later
-        current_transfer_ids = set(transfers_info.keys()) # Define this at the start of the method
+
+        current_transfer_ids = set(transfers_info.keys())
 
         if not transfers_info:
             item = QListWidgetItem("No active transfers"); item.setForeground(QColor("#888")); item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable); self.transfer_list.addItem(item)
         else:
             for tid, t_info in transfers_info.items():
                 progress = t_info.get('progress', 0)
-                self.transfer_progress_cache[tid] = progress # Update cache
+                self.transfer_progress_cache[tid] = progress
 
                 file_name = os.path.basename(t_info.get('file_path', 'Unk')); state = t_info.get('state', 'Unk'); direction = t_info.get('direction', '??'); peer_ip = t_info.get('peer_ip', '??'); peer_name = get_peer_display_name(peer_ip) if NETWORKING_AVAILABLE else f"P_{peer_ip}"; direction_symbol = "⬆️" if direction == "send" else "⬇️"
-                item_text = f"{direction_symbol} {file_name} ({peer_name}) - {state} [{progress}%]" # Use updated progress
+                item_text = f"{direction_symbol} {file_name} ({peer_name}) - {state} [{progress}%]"
                 item = QListWidgetItem(item_text); item.setData(Qt.ItemDataRole.UserRole, tid); self.transfer_list.addItem(item)
                 if tid == current_sel_id: new_sel_item = item
 
             if new_sel_item: self.transfer_list.setCurrentItem(new_sel_item)
 
-        # --- Correctly Indented Cache Cleanup ---
+
         cached_ids = list(self.transfer_progress_cache.keys())
         for tid in cached_ids:
             if tid not in current_transfer_ids:
-                # Safely delete from cache
+
                 try:
                     del self.transfer_progress_cache[tid]
                     logger.debug(f"Removed transfer {tid} from progress cache.")
                 except KeyError:
                     logger.warning(f"Attempted to remove non-existent key {tid} from progress cache.")
 
-        # --- Correctly Indented Call ---
-        # Update buttons/progress bar based on current selection (which might have changed)
+
         self.on_transfer_selection_changed(self.transfer_list.currentItem(), None)
-    
+
 
     @pyqtSlot(str, int)
     def update_transfer_progress_display(self, transfer_id, progress):
      """Updates the cache and the progress bar if the item is selected."""
-     # Always update the cache with the latest progress
+
      self.transfer_progress_cache[transfer_id] = progress
 
-     # Update the visible progress bar ONLY if this transfer is selected
+
      current_item = self.transfer_list.currentItem()
      if current_item and current_item.data(Qt.ItemDataRole.UserRole) == transfer_id:
           self.progress_bar.setValue(progress)
@@ -827,65 +814,65 @@ class MainWindow(QMainWindow):
         timestamp = time.strftime("%H:%M:%S"); formatted_message = f'<span style="color:#aaa;">[{timestamp}]</span> <b>{sender}:</b> {message}'; history_widget.append(formatted_message); history_widget.moveCursor(QTextCursor.MoveOperation.End)
 
     @pyqtSlot(str, str)
-        
+
     def display_received_message(self, sender_display_name, message):
         """Displays a received message in the correct chat window."""
-        # Extract base username robustly
+
         base_sender_username = sender_display_name
-        # Handle names potentially missing device ID
+
         if "(" in sender_display_name and sender_display_name.endswith(")"):
             base_sender_username = sender_display_name[:sender_display_name.rfind("(")]
 
         logger.debug(f"Attempting to display message from {sender_display_name} (base: {base_sender_username})")
 
-        # Ensure chat widget exists (might receive message before selecting chat)
-        self.create_chat_widget(base_sender_username) # Creates if not exists
 
-        # **** Check if widget exists in dict BEFORE accessing ****
+        self.create_chat_widget(base_sender_username)
+
+
         if base_sender_username in self.chat_widgets:
-            # Append to persistent history
+
             self.chat_histories[base_sender_username].append((sender_display_name, message))
 
-            # Append to UI widget
+
             try:
-                # Access widgets safely
+
                 history_widget = self.chat_widgets[base_sender_username]['history']
                 self._append_message_to_history(history_widget, sender_display_name, message)
             except KeyError as e:
                  logger.error(f"KeyError accessing chat widget components for {base_sender_username} after creation attempt: {e}")
                  self.update_status_bar(f"UI Error displaying message from {sender_display_name}")
-                 return # Stop processing this message if widgets are missing
+                 return
 
-            # Indicate unread if not the current chat
+
             if self.current_chat_peer_username != base_sender_username:
-                 # Find item using the base username stored in its UserRole data
+
                  for i in range(self.chat_peer_list.count()):
                       item = self.chat_peer_list.item(i)
-                      # Check if item data exists and matches
+
                       item_data = item.data(Qt.ItemDataRole.UserRole)
                       if item_data == base_sender_username:
                            font = item.font()
                            font.setBold(True)
                            item.setFont(font)
-                           break # Found the item
+                           break
         else:
-            # This case indicates create_chat_widget failed to add the entry
+
             logger.error(f"Chat widget for {base_sender_username} not found in self.chat_widgets after creation attempt.")
             self.update_status_bar(f"UI Error preparing chat for {sender_display_name}")
     @pyqtSlot(str, bool)
     def handle_connection_status_update(self, peer_ip, is_connected):
         logger.info(f"Conn status update: IP={peer_ip}, Connected={is_connected}"); peer_name = get_peer_display_name(peer_ip) if NETWORKING_AVAILABLE else f"P_{peer_ip}"; status_msg = f"{peer_name} has {'connected' if is_connected else 'disconnected'}." ; self.update_status_bar(status_msg)
-        # Lists updated via backend emit_* calls triggered by network events
+
 
     @pyqtSlot(str, str)
     def show_connection_request(self, requesting_display_name, base_username_for_cmd):
         approval_key = None; pending_peer_ip = None
         if NETWORKING_AVAILABLE:
              for key, future in pending_approvals.items():
-                  # Assuming key is (peer_ip, base_username) tuple based on Backend code
+
                   p_ip, req_user = key
                   if req_user == base_username_for_cmd: approval_key = key; pending_peer_ip = p_ip; break
-        if not approval_key or not pending_peer_ip: # Check both
+        if not approval_key or not pending_peer_ip:
             logger.error(f"No pending approval found for {base_username_for_cmd} or IP missing.");
             self.update_status_bar(f"Error handling request from {requesting_display_name}")
             return
@@ -897,46 +884,46 @@ class MainWindow(QMainWindow):
     @pyqtSlot(dict)
     def update_groups_display(self, groups_data):
          logger.debug(f"Updating groups list display: {len(groups_data)} groups")
-         # Get current selection *before* clearing
+
          current_selection = self.groups_list.currentItem()
          current_sel_groupname = current_selection.data(Qt.ItemDataRole.UserRole) if current_selection else None
 
          self.groups_list.clear()
-         item_to_reselect = None # Store the QListWidgetItem to reselect
+         item_to_reselect = None
 
          if not groups_data:
-            # Handle the case where there are no groups
+
             item = QListWidgetItem("No groups found.")
             item.setForeground(QColor("#888"))
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self.groups_list.addItem(item)
-            # Ensure details are cleared if no groups exist
+
             if self.selected_group_label.text() != "Selected Group: None":
-                 self.on_group_selected(None, None) # Trigger clearing details
+                 self.on_group_selected(None, None)
          else:
-            # Populate the list with current groups
+
             for groupname_in_loop in sorted(groups_data.keys()):
                  item = QListWidgetItem(groupname_in_loop)
                  item.setData(Qt.ItemDataRole.UserRole, groupname_in_loop)
                  self.groups_list.addItem(item)
-                 # Check if this item was the previously selected one *inside the loop*
-                 if groupname_in_loop == current_sel_groupname:
-                     item_to_reselect = item # Mark this QListWidgetItem
 
-            # After the loop, attempt to reselect the marked item if found
+                 if groupname_in_loop == current_sel_groupname:
+                     item_to_reselect = item
+
+
             if item_to_reselect:
-                # Check if it's already selected to avoid unnecessary signal emission if possible
-                # However, setCurrentItem might be needed to visually confirm selection after clear()
+
+
                 self.groups_list.setCurrentItem(item_to_reselect)
-                # Re-call the selection handler AFTER setting the current item
-                # to ensure the details pane updates correctly based on the re-selected item.
+
+
                 self.on_group_selected(item_to_reselect, None)
 
             elif current_sel_groupname is not None:
-                # If there was a selection previously, but it wasn't found in the new list
+
                 self.on_group_selected(None, None)
-            # else: No previous selection and nothing matched, list populated, details already cleared.
-    
+
+
 
     @pyqtSlot(list)
     def update_invites_display(self, invites_list):
@@ -966,50 +953,49 @@ class MainWindow(QMainWindow):
         can_connect = False
         can_disconnect = False
         can_send_file = False
-        peer_data = None # Initialize peer_data to None
+        peer_data = None
 
         if current:
-            # Attempt to get data from the current item
+
             peer_data = current.data(Qt.ItemDataRole.UserRole)
 
-            # Check if data was successfully retrieved and is valid
+
             if peer_data:
                 is_connected = peer_data.get("connected", False)
                 can_connect = not is_connected
                 can_disconnect = is_connected
-                # Check if a file is selected *and* the peer is connected
+
                 can_send_file = is_connected and (self.selected_file is not None)
             else:
-                # Handle case where item exists but has no data (shouldn't happen often)
+
                 logger.warning("Selected peer item has no associated data.")
 
-        # Set button states based on the flags determined above
-        # If current is None, or peer_data was None, flags remain False
+
         self.connect_button.setEnabled(can_connect)
         self.disconnect_button.setEnabled(can_disconnect)
         self.send_file_button.setEnabled(can_send_file)
     def on_transfer_selection_changed(self, current, previous):
-    
+
       can_pause = False; can_resume = False; progress = 0
       if current:
         transfer_id = current.data(Qt.ItemDataRole.UserRole)
-        # Get state from active_transfers (needed for button state)
+
         state_value = "Unknown"; transfer_obj = None
         if NETWORKING_AVAILABLE and transfer_id in active_transfers: transfer_obj = active_transfers[transfer_id]
-        elif not NETWORKING_AVAILABLE and transfer_id in active_transfers: transfer_obj = active_transfers[transfer_id] # Dummy
+        elif not NETWORKING_AVAILABLE and transfer_id in active_transfers: transfer_obj = active_transfers[transfer_id]
 
         if transfer_obj:
              state_value = getattr(getattr(transfer_obj, 'state', None), 'value', 'Unknown')
              can_pause = state_value == (TransferState.IN_PROGRESS.value if NETWORKING_AVAILABLE else "Sending")
              can_resume = state_value == (TransferState.PAUSED.value if NETWORKING_AVAILABLE else "Paused")
 
-        # *** Get progress from the cache ***
-        progress = self.transfer_progress_cache.get(transfer_id, 0) # Default to 0 if not found
+
+        progress = self.transfer_progress_cache.get(transfer_id, 0)
 
       self.pause_button.setEnabled(can_pause)
       self.resume_button.setEnabled(can_resume)
-      self.progress_bar.setValue(progress) # Set bar from cache
-    # --- Action Methods with Corrected Indentation --- #
+      self.progress_bar.setValue(progress)
+
     def connect_to_selected_peer(self):
         selected_item = self.network_peer_list.currentItem()
         if selected_item:
@@ -1047,36 +1033,33 @@ class MainWindow(QMainWindow):
         else:
              self.update_status_bar("No peer selected.")
 
-        # Inside class MainWindow:
-        # --- Add this NEW method inside the MainWindow class ---
+
     def display_sent_message(self, recipient_username, message):
         """Displays a message sent by the user in the correct chat window."""
-        # Get your own display name
+
         own_name = get_own_display_name() if NETWORKING_AVAILABLE else f"{self.username}(You)"
 
-        # Append to the persistent history cache first
+
         self.chat_histories[recipient_username].append((own_name, message))
 
-        # Check if the chat widget exists for this recipient
+
         if recipient_username in self.chat_widgets:
             try:
                 history_widget = self.chat_widgets[recipient_username]['history']
-                # Append the formatted message to the text edit
+
                 self._append_message_to_history(history_widget, own_name, message)
             except KeyError:
                 logger.error(f"KeyError accessing chat widget components for {recipient_username} in display_sent_message.")
             except Exception as e:
                 logger.exception(f"Error updating sent message display for {recipient_username}: {e}")
         else:
-            # This might happen if a message is sent immediately after connecting
-            # before the UI has fully switched, or if create_chat_widget failed.
-            logger.warning(f"Attempted to display sent message to '{recipient_username}', but their chat widget was not found in self.chat_widgets.")
-            # Optionally, you could try creating the widget here again, but it might indicate another issue.
-            # self.create_chat_widget(recipient_username)
-            # if recipient_username in self.chat_widgets: ... retry appending ...
-    # --- End of NEW method ---
 
-    # --- Ensure send_chat_message calls the correct method ---
+
+            logger.warning(f"Attempted to display sent message to '{recipient_username}', but their chat widget was not found in self.chat_widgets.")
+
+
+
+
     def send_chat_message(self, peer_username):
         if not peer_username or peer_username not in self.chat_widgets:
             logger.error(f"Send invalid chat target: {peer_username}")
@@ -1089,10 +1072,10 @@ class MainWindow(QMainWindow):
             logger.debug("Empty message entered, not sending.")
             return
 
-        # *** Make sure this line calls the method you just defined ***
-        self.display_sent_message(peer_username, message) # Call the correct method
 
-        # Find target IP
+        self.display_sent_message(peer_username, message)
+
+
         target_ip = next((ip for u, ip in peer_usernames.items() if u == peer_username), None) if NETWORKING_AVAILABLE else None
         logger.info(f"Attempting to send to {peer_username}. Found IP: {target_ip}. Message: '{message[:50]}...'")
 
@@ -1107,13 +1090,12 @@ class MainWindow(QMainWindow):
             self.update_status_bar(f"Error: Could not find IP for {peer_username}")
             logger.error(f"Could not find IP for username {peer_username} in peer_usernames: {peer_usernames}")
 
-    # --- Keep _append_message_to_history and other methods ---
-    
+
     def choose_file_action(self):
         path = self.backend.choose_file(self)
         if path: self.selected_file = path; self.selected_file_label.setText(os.path.basename(path)); self.selected_file_label.setStyleSheet("color: #e0e0e0;"); self.update_status_bar(f"File chosen: {os.path.basename(path)}")
         else: self.selected_file = None; self.selected_file_label.setText("No file chosen"); self.selected_file_label.setStyleSheet("color: #aaa;"); self.update_status_bar("File selection cancelled.")
-        self.on_network_peer_selection_changed(self.network_peer_list.currentItem(), None) # Update send button
+        self.on_network_peer_selection_changed(self.network_peer_list.currentItem(), None)
 
     def send_selected_file_action(self):
         selected_item = self.network_peer_list.currentItem()
@@ -1127,8 +1109,8 @@ class MainWindow(QMainWindow):
         peers_dict = {ip: ws}; fname = os.path.basename(self.selected_file); self.update_status_bar(f"Initiating send {fname} to {uname}...")
         self.backend.trigger_send_file(self.selected_file, peers_dict)
 
-    def pause_transfer(self): logger.warning("Pause transfer action not implemented yet.") # TODO
-    def resume_transfer(self): logger.warning("Resume transfer action not implemented yet.") # TODO
+    def pause_transfer(self): logger.warning("Pause transfer action not implemented yet.")
+    def resume_transfer(self): logger.warning("Resume transfer action not implemented yet.")
 
     def on_group_selected(self, current, previous):
         self.group_members_list.clear(); self.join_requests_list.clear(); self.admin_section_widget.setVisible(False); self.approve_join_button.setEnabled(False); self.deny_join_button.setEnabled(False)
@@ -1195,7 +1177,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(stylesheet_template.format(dark_bg=dark_bg,medium_bg=medium_bg,light_bg=light_bg,dark_border=dark_border,medium_border=medium_border,text_color=text_color,dim_text_color=dim_text_color,accent_color=accent_color,accent_hover=accent_hover,accent_pressed=accent_pressed,font_family=font_family, secondary_btn_hover=secondary_btn_hover, secondary_btn_pressed=secondary_btn_pressed));font=QFont(font_family.split(',')[0].strip(),10);QApplication.instance().setFont(font)
 
 
-# --- Main Execution --- #
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
@@ -1207,7 +1189,7 @@ if __name__ == "__main__":
     login_window.show()
     exit_code = app.exec()
     logger.info(f"Application exiting with code {exit_code}")
-    shutdown_event.set() # Ensure shutdown is signalled on exit
-   
+    shutdown_event.set()
+
     time.sleep(0.5)
     sys.exit(exit_code)
