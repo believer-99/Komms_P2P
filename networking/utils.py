@@ -174,3 +174,24 @@ def get_config_directory():
             return os.path.join(home, ".config", "P2PChat")
 
 
+def sanitize_file_path(base_dir, filename):
+    """
+    Prevent directory traversal attacks by sanitizing the filename.
+    
+    Args:
+        base_dir (str): The base directory where files should be stored
+        filename (str): The provided filename which may contain path components
+        
+    Returns:
+        str: A safe file path joining base_dir with just the filename component
+    """
+    # Create the base directory if it doesn't exist
+    os.makedirs(base_dir, exist_ok=True)
+    
+    # Extract just the filename component, removing any path elements
+    safe_name = os.path.basename(filename)
+    
+    # Join with the base directory to create a safe path
+    return os.path.join(base_dir, safe_name)
+
+

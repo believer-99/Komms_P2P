@@ -1,4 +1,3 @@
-# networking/file_transfer.py
 import asyncio
 import os
 import uuid
@@ -15,6 +14,7 @@ from networking.shared_state import (
     active_transfers_lock, outgoing_transfers_by_peer
 )
 from websockets.connection import State
+from utils.file_validation import check_file_size, check_disk_space, safe_close_file
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +56,7 @@ class FileTransfer:
                 logger.error(f"Transfer {self.transfer_id[:8]} failed: {reason}")
                 self.state = TransferState.FAILED
                 if self.file_handle:
-                    try: await self.file_handle.close()
-                    except Exception: pass
+                    safe_close_file(self.file_handle)
                     self.file_handle = None
                 await message_queue.put({"type": "transfer_update"})
 
@@ -69,7 +68,7 @@ async def compute_hash(file_path):
             while True:
                 chunk = await f.read(1024 * 1024) # Read in 1MB chunks
                 if not chunk:
-                    break # Exit loop if end of file is reached
+                    break 
                 hash_algo.update(chunk) # Update hash ONLY if chunk has data
         return hash_algo.hexdigest()
     except FileNotFoundError: logger.error(f"File not found during hash computation: {file_path}"); return None
@@ -82,6 +81,12 @@ async def send_file(file_path, peers):
         return
     if not peers:
         await message_queue.put({"type": "log", "message": "Send Error: No peer specified.", "level": logging.ERROR})
+        return
+
+    # Validate file size
+    is_valid, message = check_file_size(file_path)
+    if not is_valid:
+        await message_queue.put({"type": "log", "message": f"Send Error: {message}", "level": logging.ERROR})
         return
 
     peer_ip, websocket = next(iter(peers.items()))
@@ -199,8 +204,7 @@ async def send_file(file_path, peers):
         await transfer.fail(f"Send error: {e}")
     finally:
         if transfer.file_handle:
-            try: await transfer.file_handle.close()
-            except Exception: pass
+            safe_close_file(transfer.file_handle)
             transfer.file_handle = None
         # Ensure final state update is sent to GUI
         await message_queue.put({"type": "transfer_update"})

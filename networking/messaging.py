@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from appdirs import user_config_dir
 from websockets.connection import State
 
+from utils.file_validation import check_file_size, check_disk_space, safe_close_file
 
 # --- Import Core Networking Components ---
 from networking.utils import get_own_ip, get_peer_display_name, get_own_display_name # <-- Keep utils import
@@ -990,7 +991,7 @@ async def receive_peer_messages(websocket, peer_ip):
                             if transfer.transferred_size >= transfer.total_size:
                                 logger.info(f"Received expected size for transfer {transfer.transfer_id[:8]} ({transfer.transferred_size}/{transfer.total_size}). Closing file.")
                                 # Close the file handle
-                                await transfer.file_handle.close()
+                                safe_close_file(transfer.file_handle)
                                 transfer.file_handle = None # Clear the handle
 
                                 final_state = TransferState.COMPLETED
@@ -1099,12 +1100,38 @@ async def receive_peer_messages(websocket, peer_ip):
                              logger.error(f"Invalid file_transfer_init received from {display_name}: Missing fields. Data: {data}")
                              continue # Ignore invalid request
 
+                        # Check if file size is acceptable
+                        is_valid, message = check_file_size(None, max_size_mb=2000, file_size_bytes=fsize)
+                        if not is_valid:
+                            logger.warning(f"Rejecting file from {display_name}: {message}")
+                            # Send rejection message
+                            await websocket.send(json.dumps({
+                                "type": "file_transfer_response",
+                                "transfer_id": tid,
+                                "accepted": False,
+                                "reason": message
+                            }))
+                            continue
+
                         # --- Prepare Download Path ---
                         safe_fname = os.path.basename(fname) # Basic sanitization
                         download_dir = os.path.join(CONFIG_DIR, "downloads") # Store in config subdir maybe? Or keep relative? Let's keep relative for now.
                         # download_dir = "downloads" # Keep relative path
                         os.makedirs(download_dir, exist_ok=True) # Ensure directory exists
                         path = os.path.join(download_dir, safe_fname)
+                        
+                        # Check if we have enough disk space
+                        has_space, space_message = check_disk_space(download_dir, fsize / (1024 * 1024))
+                        if not has_space:
+                            logger.warning(f"Rejecting file from {display_name}: {space_message}")
+                            # Send rejection message
+                            await websocket.send(json.dumps({
+                                "type": "file_transfer_response",
+                                "transfer_id": tid,
+                                "accepted": False,
+                                "reason": space_message
+                            }))
+                            continue
 
                         # Avoid overwriting existing files by adding counter
                         counter = 1; base, ext = os.path.splitext(path)
@@ -1456,4 +1483,4 @@ async def display_messages():
         logger.warning("CLI display_messages placeholder called.")
         await asyncio.sleep(1)
         pass # Add CLI output handling here if needed standalone
-# --- End Dummy Functions ---
+# --- End Dummy

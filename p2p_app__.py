@@ -92,11 +92,17 @@ try:
 
 
 except ImportError as e:
-
+    # Enhanced error handling for missing dependencies
+    missing_module = str(e).split("No module named '")[-1].strip("'")
+    
     print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
     print(f"ERROR: Could not import networking modules: {e}")
     print(f"       Running GUI in dummy mode with limited functionality.")
+    if missing_module:
+        print(f"\nMissing dependency: {missing_module}")
+        print(f"Please install it using: pip install {missing_module}")
     print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    
     NETWORKING_AVAILABLE = False
     logger = logging.getLogger("P2PChatApp_Dummy")
     peer_usernames = {}; peer_device_ids = {}; peer_public_keys = {}; connections = {}; active_transfers = {}
@@ -110,8 +116,8 @@ except ImportError as e:
         async def receive_broadcasts(self): await asyncio.sleep(3600)
         async def cleanup_stale_peers(self): await asyncio.sleep(3600)
     async def initialize_user_config(): logger.info("Dummy Init User Config"); user_data.update({'original_username':'Dummy','device_id':'dummy123', 'key_path': 'dummy_key.pem', 'cert_path': 'dummy_cert.pem'}) # Add dummy paths
-    def get_peer_display_name(ip): return f"DummyPeer_{ip or 'Unknown'}"
-    def get_own_display_name(): return "You(dummy)"
+    def get_peer_display_name(ip): return f"{ip or 'Unknown'}"  # Removed DummyPeer_ prefix
+    def get_own_display_name(): return "You (Local Mode)"  # Changed from "You(dummy)"
     async def dummy_serve(*args, **kwargs): logger.warning("Dummy server running"); await asyncio.sleep(3600)
     websockets = type('obj', (object,), {'serve': dummy_serve})()
     async def actual_handle_peer_connection(*args, **kwargs): logger.warning("Dummy connection handler"); await asyncio.sleep(0.1)
@@ -738,45 +744,57 @@ class MainWindow(QMainWindow):
         own_ip = getattr(self.backend.discovery, 'own_ip', None) if NETWORKING_AVAILABLE and self.backend.discovery else "127.0.0.1"
 
 
-        for ip, peer_info in peers_status.items():
-            if ip == own_ip: continue
-
-
-            discovered_username = peer_info[0]
-            is_connected = ip in connections
-
-
-            display_name = discovered_username
-            if is_connected:
-
-
-                display_name = get_peer_display_name(ip)
-            elif not discovered_username:
-                 display_name = "Unknown"
-
-
-            status = " (Connected)" if is_connected else " (Discovered)"
-            item_text = f"{display_name} [{ip}]{status}"
-            item = QListWidgetItem(item_text)
-
-            item_data = {"ip": ip, "username": discovered_username, "connected": is_connected, "display_name": display_name}
-            item.setData(Qt.ItemDataRole.UserRole, item_data)
+        if not NETWORKING_AVAILABLE:
+            # In dummy mode, show installation instructions instead of dummy peers
+            item = QListWidgetItem("Network features disabled - Running in local mode")
+            item.setForeground(QColor("#ff6600"))  # Orange color
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self.network_peer_list.addItem(item)
+            
+            item = QListWidgetItem("To enable networking, install missing packages:")
+            item.setForeground(QColor("#aaaaaa"))
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            self.network_peer_list.addItem(item)
+            
+            item = QListWidgetItem("pip install psutil")
+            item.setForeground(QColor("#00aaff"))  # Blue color
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            self.network_peer_list.addItem(item)
+        else:
+            for ip, peer_info in peers_status.items():
+                if ip == own_ip:
+                    continue
 
+                discovered_username = peer_info[0]
+                is_connected = ip in connections
 
-            if current_sel_data and current_sel_data.get("ip") == ip:
-                new_sel_item = item
+                display_name = discovered_username
+                if is_connected:
+                    display_name = get_peer_display_name(ip)
+                elif not discovered_username:
+                    display_name = "Unknown"
 
-        if not peers_status:
-             item = QListWidgetItem("No other peers discovered")
-             item.setForeground(QColor("#888"))
-             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-             self.network_peer_list.addItem(item)
+                status = " (Connected)" if is_connected else " (Discovered)"
+                item_text = f"{display_name} [{ip}]{status}"
+                item = QListWidgetItem(item_text)
 
-        if new_sel_item: self.network_peer_list.setCurrentItem(new_sel_item)
-        else: self.on_network_peer_selection_changed(None, None)
+                item_data = {"ip": ip, "username": discovered_username, "connected": is_connected, "display_name": display_name}
+                item.setData(Qt.ItemDataRole.UserRole, item_data)
+                self.network_peer_list.addItem(item)
 
+                if current_sel_data and current_sel_data.get("ip") == ip:
+                    new_sel_item = item
 
+            if not peers_status:
+                item = QListWidgetItem("No other peers discovered")
+                item.setForeground(QColor("#888"))
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                self.network_peer_list.addItem(item)
+
+            if new_sel_item:
+                self.network_peer_list.setCurrentItem(new_sel_item)
+            else:
+                self.on_network_peer_selection_changed(None, None)
 
         self.update_chat_peer_list()
 
@@ -961,7 +979,7 @@ class MainWindow(QMainWindow):
 
 
     @pyqtSlot(list)
-    def update_invites_display(self, invites_list):
+    def update_invites_display(self, invites_list): 
         logger.debug(f"Updating invites list: {len(invites_list)} invites"); current_sel_data = self.pending_invites_list.currentItem().data(Qt.ItemDataRole.UserRole) if self.pending_invites_list.currentItem() else None; self.pending_invites_list.clear(); new_sel_item = None
         for invite in invites_list:
             groupname = invite.get("groupname"); inviter_ip = invite.get("inviter_ip"); inviter_name = get_peer_display_name(inviter_ip) if NETWORKING_AVAILABLE else f"P_{inviter_ip}"; item_text = f"{groupname} (from {inviter_name})"
@@ -1143,8 +1161,51 @@ class MainWindow(QMainWindow):
         peers_dict = {ip: ws}; fname = os.path.basename(self.selected_file); self.update_status_bar(f"Initiating send {fname} to {uname}...")
         self.backend.trigger_send_file(self.selected_file, peers_dict)
 
-    def pause_transfer(self): logger.warning("Pause transfer action not implemented yet.")
-    def resume_transfer(self): logger.warning("Resume transfer action not implemented yet.")
+    def pause_transfer(self):
+        selected_item = self.transfer_list.currentItem()
+        if not selected_item:
+            self.update_status_bar("No transfer selected.")
+            return
+            
+        transfer_id = selected_item.data(Qt.ItemDataRole.UserRole)
+        if not NETWORKING_AVAILABLE or transfer_id not in active_transfers:
+            self.update_status_bar("Cannot pause: Transfer not found or network unavailable.")
+            return
+            
+        transfer_obj = active_transfers[transfer_id]
+        self.update_status_bar(f"Pausing transfer {os.path.basename(transfer_obj.file_path)}...")
+        
+        # Use an async worker to call the pause method
+        def on_finished(): self.update_status_bar("Transfer paused.")
+        def on_error(err): self.update_status_bar(f"Failed to pause: {err[1]}")
+        
+        worker = Worker(transfer_obj.pause, loop=self.backend.loop)
+        worker.signals.finished.connect(on_finished)
+        worker.signals.error.connect(on_error)
+        QThreadPool.globalInstance().start(worker)
+
+    def resume_transfer(self):
+        selected_item = self.transfer_list.currentItem()
+        if not selected_item:
+            self.update_status_bar("No transfer selected.")
+            return
+            
+        transfer_id = selected_item.data(Qt.ItemDataRole.UserRole)
+        if not NETWORKING_AVAILABLE or transfer_id not in active_transfers:
+            self.update_status_bar("Cannot resume: Transfer not found or network unavailable.")
+            return
+            
+        transfer_obj = active_transfers[transfer_id]
+        self.update_status_bar(f"Resuming transfer {os.path.basename(transfer_obj.file_path)}...")
+        
+        # Use an async worker to call the resume method
+        def on_finished(): self.update_status_bar("Transfer resumed.")
+        def on_error(err): self.update_status_bar(f"Failed to resume: {err[1]}")
+        
+        worker = Worker(transfer_obj.resume, loop=self.backend.loop)
+        worker.signals.finished.connect(on_finished)
+        worker.signals.error.connect(on_error)
+        QThreadPool.globalInstance().start(worker)
 
     def on_group_selected(self, current, previous):
         self.group_members_list.clear(); self.join_requests_list.clear(); self.admin_section_widget.setVisible(False); self.approve_join_button.setEnabled(False); self.deny_join_button.setEnabled(False)
