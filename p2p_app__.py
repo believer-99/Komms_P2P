@@ -34,7 +34,7 @@ try:
     QMainWindow, QMessageBox, QPushButton,
     QProgressBar, QVBoxLayout, QWidget, QTabWidget,
     QTextEdit, QHBoxLayout, QStatusBar, QMenuBar, QMenu,
-    QStyle, QSplitter, QStackedWidget, QFrame)
+    QStyle, QSplitter, QStackedWidget, QFrame, QGraphicsDropShadowEffect) # <-- Added QGraphicsDropShadowEffect
     from PyQt6.QtGui import QIcon, QFont, QCloseEvent, QPalette, QColor, QTextCursor
 except ImportError as pyqt_err:
     print(f"CRITICAL ERROR: Failed to import PyQt6: {pyqt_err}")
@@ -609,6 +609,11 @@ class MainWindow(QMainWindow):
         logger.info("MainWindow: Backend and NetworkingThread initialized.")
         self.own_display_name = get_own_display_name() if NETWORKING_AVAILABLE else f"{self.username}(You)" # Store own name consistently
 
+        # Add this to track transfer speeds and timestamps
+        self.transfer_speed_cache = {}
+        self.transfer_start_times = {}
+        self.transfer_last_update = {}
+        self.transfer_bytes_last = {}
 
         # --- Define Bubble Colors ---
         # You can customize these colors
@@ -698,7 +703,7 @@ class MainWindow(QMainWindow):
 
     def setup_chat_tab(self):
         # ... (keep existing setup_chat_tab code, the structure is fine) ...
-        layout=QHBoxLayout(self.chat_tab);layout.setContentsMargins(0,0,0,0);layout.setSpacing(0);splitter=QSplitter(Qt.Orientation.Horizontal);layout.addWidget(splitter);self.chat_peer_list=QListWidget();self.chat_peer_list.setObjectName("chat_peer_list");self.chat_peer_list.setFixedWidth(250);self.chat_peer_list.currentItemChanged.connect(self.on_chat_peer_selected);splitter.addWidget(self.chat_peer_list);right_pane_widget=QWidget();right_pane_layout=QVBoxLayout(right_pane_widget);right_pane_layout.setContentsMargins(10,10,10,10);right_pane_layout.setSpacing(10);self.chat_stack=QStackedWidget();right_pane_layout.addWidget(self.chat_stack,1);self.no_chat_selected_widget=QLabel("Select a peer to start chatting.");self.no_chat_selected_widget.setAlignment(Qt.AlignmentFlag.AlignCenter);self.no_chat_selected_widget.setStyleSheet("color: #888;");self.chat_stack.addWidget(self.no_chat_selected_widget);splitter.addWidget(right_pane_widget);splitter.setSizes([250,750]);self.update_chat_peer_list()
+        layout=QHBoxLayout(self.chat_tab);layout.setContentsMargins(0,0,0,0);layout.setSpacing(0);splitter=QSplitter(Qt.Orientation.Horizontal);layout.addWidget(splitter);self.chat_peer_list=QListWidget();self.chat_peer_list.setObjectName("chat_peer_list");self.chat_peer_list.setFixedWidth(250);self.chat_peer_list.currentItemChanged.connect(self.on_chat_peer_selected);splitter.addWidget(self.chat_peer_list);right_pane_widget=QWidget();right_pane_layout=QVBoxLayout(right_pane_widget);right_pane_layout.setContentsMargins(10, 10, 10, 10);right_pane_layout.setSpacing(10);self.chat_stack=QStackedWidget();right_pane_layout.addWidget(self.chat_stack,1);self.no_chat_selected_widget=QLabel("Select a peer to start chatting.");self.no_chat_selected_widget.setAlignment(Qt.AlignmentFlag.AlignCenter);self.no_chat_selected_widget.setStyleSheet("color: #888;");self.chat_stack.addWidget(self.no_chat_selected_widget);splitter.addWidget(right_pane_widget);splitter.setSizes([250,750]);self.update_chat_peer_list()
 
     def create_chat_widget(self, peer_username):
         if peer_username in self.chat_widgets:
@@ -708,43 +713,50 @@ class MainWindow(QMainWindow):
         try:
             chat_widget = QWidget()
             layout = QVBoxLayout(chat_widget)
-            layout.setContentsMargins(0, 0, 0, 0) # Set margins to 0 here
-            layout.setSpacing(0) # Use 0 spacing, margins will be handled by HTML
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
 
             logger.debug(f"Creating history QTextEdit for {peer_username}")
             history = QTextEdit()
             history.setReadOnly(True)
-            # Apply background color consistent with the theme to the history view
-            history.setStyleSheet(f"background-color: {self.central_widget.palette().color(QPalette.ColorRole.Base).name()}; border: none; padding: 10px;")
+            # Use a darker background for better contrast with new larger white text
+            history.setStyleSheet(f"""
+                background-color: #212529; 
+                border: none; 
+                padding: 8px;
+                color: #FFFFFF;
+                font-size: 16px;
+            """)
             history.setObjectName(f"chat_history_{peer_username}")
             layout.addWidget(history, 1)
 
             # --- Input Area ---
-            input_frame = QFrame() # Use a frame for better styling control
+            input_frame = QFrame()
             input_frame.setObjectName("chat_input_frame")
-            input_frame.setFixedHeight(50) # Give it a fixed height
+            input_frame.setFixedHeight(60)  # Increased height for better usability
             input_layout = QHBoxLayout(input_frame)
-            input_layout.setContentsMargins(10, 5, 10, 5) # Add some padding
+            input_layout.setContentsMargins(10, 5, 10, 5)
             input_layout.setSpacing(10)
 
             logger.debug(f"Creating input QLineEdit for {peer_username}")
             msg_input = QLineEdit()
             msg_input.setPlaceholderText(f"Message {peer_username}...")
             msg_input.setObjectName(f"chat_input_{peer_username}")
-            # Style the input field - give it rounded corners etc. via stylesheet later
+            # Make input text larger too
+            msg_input.setStyleSheet("font-size: 16px;")
 
             logger.debug(f"Creating send QPushButton for {peer_username}")
             send_btn = QPushButton()
             send_btn.setObjectName("chat_send_button")
             send_btn.setIcon(QIcon.fromTheme("mail-send", QIcon("./icons/send.png")))
-            send_btn.setFixedSize(QSize(36, 36)) # Slightly larger button
-            send_btn.setIconSize(QSize(20, 20))
+            send_btn.setFixedSize(QSize(44, 44))  # Larger button for easier clicking
+            send_btn.setIconSize(QSize(24, 24))   # Larger icon
             send_btn.setToolTip(f"Send message to {peer_username}")
-            send_btn.setCursor(Qt.CursorShape.PointingHandCursor) # Make it feel clickable
+            send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
             input_layout.addWidget(msg_input)
             input_layout.addWidget(send_btn)
-            layout.addWidget(input_frame) # Add the frame containing input and button
+            layout.addWidget(input_frame)
 
             logger.debug(f"Connecting signals for {peer_username}")
             send_btn.clicked.connect(lambda: self.send_chat_message(peer_username))
@@ -755,18 +767,14 @@ class MainWindow(QMainWindow):
             logger.debug(f"Populating history for {peer_username}")
             history.clear()
             try:
-                # --- MODIFICATION START ---
                 for msg_sender_stored, msg_content in self.chat_histories.get(peer_username, []):
-                    # Check if the stored sender is our special marker
                     is_own = (msg_sender_stored == "__SELF__")
-                    # Use the *correct* display name for the append function
                     display_sender = self.own_display_name if is_own else msg_sender_stored
                     self._append_message_to_history(history, display_sender, msg_content, is_own_message=is_own)
-                # --- MODIFICATION END ---
             except Exception as hist_err:
                 logger.error(f"Error populating history for {peer_username}: {hist_err}", exc_info=True)
 
-            history.moveCursor(QTextCursor.MoveOperation.End) # Ensure scroll after populating
+            history.moveCursor(QTextCursor.MoveOperation.End)
 
             logger.info(f"Successfully created chat widget for {peer_username}")
             return chat_widget
@@ -820,7 +828,119 @@ class MainWindow(QMainWindow):
 
     def setup_transfers_tab(self):
         # ... (keep existing setup_transfers_tab code) ...
-        layout=QVBoxLayout(self.transfers_tab);layout.setSpacing(10);layout.setContentsMargins(15,15,15,15);transfer_label=QLabel("Active Transfers:");transfer_label.setStyleSheet("font-weight: bold; font-size: 14px; margin-bottom: 5px;");layout.addWidget(transfer_label);self.transfer_list=QListWidget();self.transfer_list.setObjectName("transfer_list");layout.addWidget(self.transfer_list,1);self.progress_bar=QProgressBar();self.progress_bar.setValue(0);self.progress_bar.setTextVisible(True);layout.addWidget(self.progress_bar);button_layout=QHBoxLayout();button_layout.setSpacing(10);button_layout.addStretch();self.pause_button=QPushButton("Pause");self.pause_button.setObjectName("pause_button");self.pause_button.setIcon(QIcon.fromTheme("media-playback-pause",QIcon("./icons/pause.png")));self.resume_button=QPushButton("Resume");self.resume_button.setObjectName("resume_button");self.resume_button.setIcon(QIcon.fromTheme("media-playback-start",QIcon("./icons/resume.png")));button_layout.addWidget(self.pause_button);button_layout.addWidget(self.resume_button);layout.addLayout(button_layout);self.transfer_list.currentItemChanged.connect(self.on_transfer_selection_changed);self.pause_button.clicked.connect(self.pause_transfer);self.resume_button.clicked.connect(self.resume_transfer);self.update_transfer_list_display({})
+        layout=QVBoxLayout(self.transfers_tab)
+        layout.setSpacing(12) # Increased spacing
+        layout.setContentsMargins(18, 18, 18, 18) # Increased margins for better padding
+        
+        # Add a title container with better visual hierarchy
+        title_container = QWidget()
+        title_layout = QHBoxLayout(title_container)
+        title_layout.setContentsMargins(0, 0, 0, 10)
+        
+        transfer_icon = QLabel()
+        icon = QIcon.fromTheme("network-transmit-receive", QIcon("./icons/transfer.png"))
+        transfer_icon.setPixmap(icon.pixmap(QSize(24, 24)))
+        
+        transfer_label=QLabel("Active Transfers")
+        transfer_label.setStyleSheet("font-weight: bold; font-size: 16px; margin-bottom: 5px;")
+        
+        title_layout.addWidget(transfer_icon)
+        title_layout.addWidget(transfer_label, 1)
+        layout.addWidget(title_container)
+        
+        # Visually separate the title from content
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(separator)
+        layout.addSpacing(5)
+        
+        self.transfer_list=QListWidget()
+        self.transfer_list.setObjectName("transfer_list")
+        # Add inset shadow effect for depth
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(10)
+        shadow.setColor(QColor(0, 0, 0, 80))
+        shadow.setOffset(0, 0)
+        self.transfer_list.setGraphicsEffect(shadow)
+        
+        layout.addWidget(self.transfer_list, 1)
+        
+        # Progress section with better visual grouping
+        progress_container = QWidget()
+        progress_container.setObjectName("progress_container")
+        progress_layout = QVBoxLayout(progress_container)
+        progress_layout.setContentsMargins(8, 12, 8, 8)
+        
+        progress_label = QLabel("Transfer Progress")
+        progress_label.setStyleSheet("font-weight: bold; color: #bbbbbb; font-size: 13px;")
+        progress_layout.addWidget(progress_label)
+        
+        self.progress_bar=QProgressBar()
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        progress_layout.addWidget(self.progress_bar)
+        
+        # Add transfer speed and estimated time
+        transfer_stats_layout = QHBoxLayout()
+        transfer_stats_layout.setSpacing(15)
+        
+        # Speed label
+        speed_container = QWidget()
+        speed_layout = QVBoxLayout(speed_container)
+        speed_layout.setContentsMargins(0, 5, 0, 0)
+        speed_layout.setSpacing(2)
+        
+        speed_title = QLabel("Transfer Speed:")
+        speed_title.setStyleSheet("color: #bbbbbb; font-size: 12px;")
+        self.speed_value = QLabel("-- MB/s")
+        self.speed_value.setStyleSheet("color: #ffffff; font-size: 14px; font-weight: bold;")
+        
+        speed_layout.addWidget(speed_title)
+        speed_layout.addWidget(self.speed_value)
+        
+        # Estimated time label
+        time_container = QWidget()
+        time_layout = QVBoxLayout(time_container)
+        time_layout.setContentsMargins(0, 5, 0, 0)
+        time_layout.setSpacing(2)
+        
+        time_title = QLabel("Estimated Time:")
+        time_title.setStyleSheet("color: #bbbbbb; font-size: 12px;")
+        self.time_value = QLabel("--:--:--")
+        self.time_value.setStyleSheet("color: #ffffff; font-size: 14px; font-weight: bold;")
+        
+        time_layout.addWidget(time_title)
+        time_layout.addWidget(self.time_value)
+        
+        transfer_stats_layout.addWidget(speed_container)
+        transfer_stats_layout.addWidget(time_container)
+        
+        progress_layout.addLayout(transfer_stats_layout)
+        
+        layout.addWidget(progress_container)
+        
+        # Control buttons with better layout
+        button_layout=QHBoxLayout()
+        button_layout.setSpacing(12)
+        button_layout.addStretch()
+        
+        self.pause_button=QPushButton("Pause")
+        self.pause_button.setObjectName("pause_button")
+        self.pause_button.setIcon(QIcon.fromTheme("media-playback-pause",QIcon("./icons/pause.png")))
+        
+        self.resume_button=QPushButton("Resume")
+        self.resume_button.setObjectName("resume_button")
+        self.resume_button.setIcon(QIcon.fromTheme("media-playback-start",QIcon("./icons/resume.png")))
+        
+        button_layout.addWidget(self.pause_button)
+        button_layout.addWidget(self.resume_button)
+        layout.addLayout(button_layout)
+        
+        self.transfer_list.currentItemChanged.connect(self.on_transfer_selection_changed)
+        self.pause_button.clicked.connect(self.pause_transfer)
+        self.resume_button.clicked.connect(self.resume_transfer)
+        self.update_transfer_list_display({})
 
     def setup_peers_tab(self):
         # ... (keep existing setup_peers_tab code) ...
@@ -1013,15 +1133,70 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(str, int)
     def update_transfer_progress_display(self, transfer_id, progress):
-        # ... (keep existing update_transfer_progress_display code) ...
-        """Updates the cache and the progress bar if the item is selected."""
+        """Updates the cache and the progress bar if the item is selected, including speed and ETA."""
+        current_time = time.time()
         self.transfer_progress_cache[transfer_id] = progress
+        
+        # Get transfer info for calculations
+        t_info = active_transfers.get(transfer_id) if NETWORKING_AVAILABLE else None
+        if t_info:
+            # Initialize tracking for this transfer if needed
+            if transfer_id not in self.transfer_start_times:
+                self.transfer_start_times[transfer_id] = current_time
+                self.transfer_last_update[transfer_id] = current_time
+                self.transfer_bytes_last[transfer_id] = 0
+                self.transfer_speed_cache[transfer_id] = 0.0
+            
+            # Calculate transfer speed (MB/s)
+            transferred_bytes = getattr(t_info, 'transferred_size', 0)
+            total_bytes = getattr(t_info, 'total_size', 1)  # Avoid division by zero
+            
+            # Only update speed every second to avoid fluctuations
+            time_since_last = current_time - self.transfer_last_update[transfer_id]
+            if time_since_last >= 0.5:  # Update every half second
+                bytes_since_last = transferred_bytes - self.transfer_bytes_last[transfer_id]
+                speed_mbps = (bytes_since_last / time_since_last) / (1024 * 1024) if time_since_last > 0 else 0
+                
+                # Use a weighted average to smooth the speed (70% new, 30% old)
+                if self.transfer_speed_cache[transfer_id] > 0:
+                    speed_mbps = 0.7 * speed_mbps + 0.3 * self.transfer_speed_cache[transfer_id]
+                
+                self.transfer_speed_cache[transfer_id] = speed_mbps
+                self.transfer_last_update[transfer_id] = current_time
+                self.transfer_bytes_last[transfer_id] = transferred_bytes
+            
+            # Calculate estimated time remaining (in seconds)
+            speed = self.transfer_speed_cache[transfer_id]
+            if speed > 0:
+                bytes_remaining = total_bytes - transferred_bytes
+                eta_seconds = bytes_remaining / (speed * 1024 * 1024)
+            else:
+                eta_seconds = float('inf')
+            
+            # Format time remaining as HH:MM:SS
+            if eta_seconds == float('inf'):
+                eta_formatted = "--:--:--"
+            else:
+                eta_hours = int(eta_seconds // 3600)
+                eta_minutes = int((eta_seconds % 3600) // 60)
+                eta_seconds = int(eta_seconds % 60)
+                eta_formatted = f"{eta_hours:02d}:{eta_minutes:02d}:{eta_seconds:02d}"
+        
+        # Update UI if this transfer is selected
         current_item = self.transfer_list.currentItem()
         if current_item and current_item.data(Qt.ItemDataRole.UserRole) == transfer_id:
             self.progress_bar.setValue(progress)
+            
+            # Update speed and ETA displays
+            if t_info:
+                speed_mbps = self.transfer_speed_cache.get(transfer_id, 0.0)
+                self.speed_value.setText(f"{speed_mbps:.2f} MB/s")
+                self.time_value.setText(eta_formatted)
+            else:
+                self.speed_value.setText("-- MB/s")
+                self.time_value.setText("--:--:--")
 
             # --- Also update the item text in the list ---
-            t_info = active_transfers.get(transfer_id) if NETWORKING_AVAILABLE else None
             if t_info:
                 # Rebuild the item text with the new progress
                 file_name = os.path.basename(t_info.file_path)
@@ -1031,249 +1206,23 @@ class MainWindow(QMainWindow):
                 peer_name = get_peer_display_name(peer_ip) if NETWORKING_AVAILABLE else f"Peer_{peer_ip}"
                 direction_symbol = "⬆️ Send" if direction == "send" else "⬇️ Recv"
                 total_size_mb = t_info.total_size / (1024 * 1024)
-                item_text = f"{direction_symbol} to {peer_name}: {file_name} ({total_size_mb:.2f} MB) - {state} [{progress}%]"
+                
+                # Add speed to the display
+                speed_mbps = self.transfer_speed_cache.get(transfer_id, 0.0)
+                item_text = f"{direction_symbol} to {peer_name}: {file_name} ({total_size_mb:.2f} MB) - {state} [{progress}%] - {speed_mbps:.2f} MB/s"
                 current_item.setText(item_text)
-            # --- End update item text ---
-
-    # --- *** NEW/MODIFIED METHOD *** ---
-        # --- REFINED _append_message_to_history ---
-        # --- REPLACED _append_message_to_history with QTextDocument API approach ---
-        # --- FINAL HTML Approach for _append_message_to_history ---
-        # --- SIMPLIFIED _append_message_to_history (No Bubbles) ---
-        # --- CORRECTED _append_message_to_history (Alignment Fix) ---
-        # --- ULTRA-SIMPLIFIED _append_message_to_history (Alignment Only) ---
-       # --- CORRECTED v3 _append_message_to_history (Focus on Alignment) ---
-    def _append_message_to_history(self, history_widget: QTextEdit, sender_for_display: str, message: str, is_own_message: bool):
-        """Appends a message with ONLY text alignment (left/right), NO BUBBLES."""
-        timestamp = time.strftime("%H:%M") # Shorter timestamp
-
-        # --- Style Definitions ---
-        message_font_size = "14px"
-        meta_font_size = "10px"
-        sender_font_weight = "bold"
-
-        # Colors
-        text_color = self.bubble_text_color # Use the defined text color (#e0e0e0)
-        meta_color = self.timestamp_color   # Use defined timestamp color (#a0a0a0)
-        sender_name_color = self.sender_name_color # Use defined sender color (#88aabb)
-
-        # *** THE CORE ALIGNMENT FIX - Explicit Check ***
-        if is_own_message:
-            align_style = "text-align: right;"
-            # Use "You" for sender display
-            sender_html = f"""<span style="font-weight: {sender_font_weight}; color: {sender_name_color}; font-size: 0.85em;">You</span>"""
-            # Padding on the left for right-aligned text
-            paragraph_padding = "padding-left: 40px; padding-right: 10px;"
-        else: # Received message
-            align_style = "text-align: left;"
-            # Use the actual sender name for display
-            sender_html = f"""<span style="font-weight: {sender_font_weight}; color: {sender_name_color}; font-size: 0.85em;">{html.escape(sender_for_display)}</span>"""
-            # Padding on the right for left-aligned text
-            paragraph_padding = "padding-left: 10px; padding-right: 40px;"
-
-        # Escape message content
-        escaped_message = html.escape(message).replace('\n', '<br>')
-
-        # Timestamp style
-        timestamp_html = f"""<span style="font-size: {meta_font_size}; color: {meta_color};">{timestamp}</span>"""
-
-        # Message style
-        message_html = f"""<span style="font-size: {message_font_size}; color: {text_color};">{escaped_message}</span>"""
-
-        # Construct the HTML block using the CORRECT alignment style and padding
-        html_block = f"""
-        <p style="{align_style} margin-top: 1px; margin-bottom: 5px; {paragraph_padding}">
-            {sender_html}<br>
-            {message_html}<br>
-            {timestamp_html}
-        </p>
-        """
-
-        # Append using insertHtml and ensure scrolling
-        cursor = history_widget.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        history_widget.setTextCursor(cursor)
-        history_widget.insertHtml(html_block)
-        history_widget.ensureCursorVisible() # Scroll to show the new message
-    # --- MODIFIED display_received_message ---
-    @pyqtSlot(str, str)
-    def display_received_message(self, sender_display_name, message):
-        """Displays a received message in the correct chat window."""
-        base_sender_username = sender_display_name.split("(")[0] if "(" in sender_display_name else sender_display_name
-        logger.debug(f"Attempting to display received message from {sender_display_name} (base: {base_sender_username})")
-
-        # --- Store the *actual received sender name* ---
-        self.chat_histories[base_sender_username].append((sender_display_name, message)) # Store tuple
-
-        # Ensure chat widget exists (creates if not, populates history)
-        self.create_chat_widget(base_sender_username)
-
-        if base_sender_username in self.chat_widgets:
-            try:
-                history_widget = self.chat_widgets[base_sender_username]['history']
-                # --- Append using the corrected logic ---
-                self._append_message_to_history(history_widget, sender_display_name, message, is_own_message=False) # Pass False
-            # ... (keep error handling) ...
-            except KeyError as e: logger.error(f"KeyError accessing chat widget components for {base_sender_username}: {e}"); self.update_status_bar(f"UI Error displaying message from {sender_display_name}"); return
-            except Exception as e: logger.exception(f"Error appending received message for {base_sender_username}: {e}"); return
-
-            # Highlight peer in list if chat not active
-            if self.current_chat_peer_username != base_sender_username:
-                 # ... (keep bolding logic) ...
-                 for i in range(self.chat_peer_list.count()):
-                     item = self.chat_peer_list.item(i); item_data = item.data(Qt.ItemDataRole.UserRole)
-                     if item_data == base_sender_username: font = item.font(); font.setBold(True); item.setFont(font); logger.debug(f"Set item '{item.text()}' to bold."); break
-                 else: logger.warning(f"Could not find item for base username {base_sender_username} in chat peer list to set bold.")
-        else:
-            logger.error(f"Chat widget for {base_sender_username} not found after creation attempt. History saved.")
-            self.update_status_bar(f"UI Error preparing chat for {sender_display_name}")
-
-
-    # --- MODIFIED display_sent_message ---
-    def display_sent_message(self, recipient_username, message):
-        """Displays a message sent by the user."""
-
-        # --- Store with the special __SELF__ marker ---
-        self.chat_histories[recipient_username].append(("__SELF__", message)) # Store marker
-
-        # Ensure chat widget exists (creates if not, populates history)
-        self.create_chat_widget(recipient_username)
-
-        if recipient_username in self.chat_widgets:
-            try:
-                history_widget = self.chat_widgets[recipient_username]['history']
-                # --- Append using the corrected logic ---
-                # Pass the display name "You" but crucially pass is_own_message=True
-                self._append_message_to_history(history_widget, "You", message, is_own_message=True) # Pass True
-            # ... (keep error handling) ...
-            except KeyError: logger.error(f"KeyError accessing chat widget components for {recipient_username} in display_sent_message.")
-            except Exception as e: logger.exception(f"Error updating sent message display for {recipient_username}: {e}")
-        else:
-            logger.warning(f"Attempted to display sent message to '{recipient_username}', but chat widget not found after creation attempt. History saved.")
-
-    @pyqtSlot(str, bool)
-    def handle_connection_status_update(self, peer_ip, is_connected):
-        # ... (keep existing handle_connection_status_update code) ...
-        logger.info(f"Conn status update: IP={peer_ip}, Connected={is_connected}"); peer_name = get_peer_display_name(peer_ip) if NETWORKING_AVAILABLE else f"P_{peer_ip}"; status_msg = f"{peer_name} has {'connected' if is_connected else 'disconnected'}." ; self.update_status_bar(status_msg)
-        # Update peer lists after connection status changes
-        self.update_peer_list_display(getattr(self.backend.discovery, 'peer_list', {}) if NETWORKING_AVAILABLE and self.backend.discovery else {}) # Trigger full update
-
-    @pyqtSlot(str, str)
-    def show_connection_request(self, requesting_display_name, base_username_for_cmd):
-        # ... (keep existing show_connection_request code) ...
-        approval_key = None; pending_peer_ip = None
-        if NETWORKING_AVAILABLE:
-             for key, future in list(pending_approvals.items()): # Iterate over a copy
-                  p_ip, req_user = key
-                  # Match using the base username provided by the backend event
-                  if req_user == base_username_for_cmd:
-                       approval_key = key
-                       pending_peer_ip = p_ip
-                       break # Found the matching request
-        if not approval_key or not pending_peer_ip:
-            logger.error(f"No pending approval found matching base username '{base_username_for_cmd}'. Display name was '{requesting_display_name}'. Pending keys: {list(pending_approvals.keys())}");
-            self.update_status_bar(f"Error handling request from {requesting_display_name}")
-            # Maybe remove stale requests here if logic allows
-            return
-
-        reply = QMessageBox.question(self, "Connection Request", f"Accept connection from:\n{requesting_display_name}?", QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.Yes:
-            success = self.backend.approve_connection(pending_peer_ip, base_username_for_cmd)
-            self.update_status_bar(f"Approved {requesting_display_name}" if success else f"Failed approval for {requesting_display_name}")
-        else:
-            success = self.backend.deny_connection(pending_peer_ip, base_username_for_cmd)
-            self.update_status_bar(f"Denied {requesting_display_name}" if success else f"Failed denial for {requesting_display_name}")
-
-    @pyqtSlot(dict)
-    def update_groups_display(self, groups_data):
-        # ... (keep existing update_groups_display code) ...
-         logger.debug(f"Updating groups list display: {len(groups_data)} groups")
-         current_selection = self.groups_list.currentItem()
-         current_sel_groupname = current_selection.data(Qt.ItemDataRole.UserRole) if current_selection else None
-         self.groups_list.clear(); item_to_reselect = None
-
-         if not groups_data:
-            item = QListWidgetItem("No groups found.")
-            item.setForeground(QColor("#888")); item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable); self.groups_list.addItem(item)
-            if self.selected_group_label.text() != "Selected Group: None": self.on_group_selected(None, None) # Clear details pane
-         else:
-            for groupname_in_loop in sorted(groups_data.keys()):
-                 item = QListWidgetItem(groupname_in_loop); item.setData(Qt.ItemDataRole.UserRole, groupname_in_loop); self.groups_list.addItem(item)
-                 if groupname_in_loop == current_sel_groupname: item_to_reselect = item
-
-            if item_to_reselect:
-                self.groups_list.setCurrentItem(item_to_reselect)
-                # Ensure details pane updates even if selection doesn't technically "change"
-                self.on_group_selected(item_to_reselect, None)
-            elif current_sel_groupname is not None: # Selection existed but group is gone
-                self.on_group_selected(None, None) # Clear details pane
-
-    @pyqtSlot(list)
-    def update_invites_display(self, invites_list):
-        # ... (keep existing update_invites_display code) ...
-        logger.debug(f"Updating invites list: {len(invites_list)} invites"); current_sel_data = self.pending_invites_list.currentItem().data(Qt.ItemDataRole.UserRole) if self.pending_invites_list.currentItem() else None; self.pending_invites_list.clear(); new_sel_item = None
-        for invite in invites_list:
-            groupname = invite.get("groupname"); inviter_ip = invite.get("inviter_ip"); inviter_name = get_peer_display_name(inviter_ip) if NETWORKING_AVAILABLE else f"P_{inviter_ip}"; item_text = f"{groupname} (from {inviter_name})"
-            item = QListWidgetItem(item_text); item_data = {"groupname": groupname, "inviter_ip": inviter_ip}; item.setData(Qt.ItemDataRole.UserRole, item_data); self.pending_invites_list.addItem(item)
-            if current_sel_data and current_sel_data == item_data: new_sel_item = item
-        if new_sel_item: self.pending_invites_list.setCurrentItem(new_sel_item)
-        self.on_invite_selected(self.pending_invites_list.currentItem(), None) # Update buttons
-
-    @pyqtSlot(dict)
-    def update_join_requests_display(self, requests_dict):
-        # ... (keep existing update_join_requests_display code) ...
-        logger.debug(f"Updating join requests display"); selected_group_item = self.groups_list.currentItem()
-        current_sel_data = self.join_requests_list.currentItem().data(Qt.ItemDataRole.UserRole) if self.join_requests_list.currentItem() else None # Get current selection before clearing
-        self.join_requests_list.clear(); new_sel_item = None
-
-        # Only populate if a group is selected AND the admin section should be visible
-        if selected_group_item and self.admin_section_widget.isVisible():
-            selected_groupname = selected_group_item.data(Qt.ItemDataRole.UserRole)
-            requests = requests_dict.get(selected_groupname, [])
-            logger.debug(f"Found {len(requests)} join requests for selected group '{selected_groupname}'")
-
-            for req in requests:
-                req_ip = req.get("requester_ip")
-                req_uname = req.get("requester_username", "Unknown")
-                # Use get_peer_display_name for consistency, fallback to username/IP
-                req_display_name = get_peer_display_name(req_ip) if NETWORKING_AVAILABLE else req_uname
-                if not req_display_name or req_display_name == "Unknown": req_display_name = f"{req_uname} ({req_ip})"
-
-                item_text = f"{req_display_name}" # Simpler text
-                item = QListWidgetItem(item_text)
-                item.setToolTip(f"User: {req_uname}\nIP: {req_ip}\nRequesting to join: {selected_groupname}")
-                item_data = {"groupname": selected_groupname, "requester_ip": req_ip, "requester_username": req_uname}
-                item.setData(Qt.ItemDataRole.UserRole, item_data)
-                self.join_requests_list.addItem(item)
-                # Reselect if this item was previously selected
-                if current_sel_data and current_sel_data == item_data: new_sel_item = item
-
-            if new_sel_item: self.join_requests_list.setCurrentItem(new_sel_item)
-
-        # Update button states based on current selection (even if list is empty now)
-        self.on_join_request_selected(self.join_requests_list.currentItem(), None)
-
-
-    def on_network_peer_selection_changed(self, current, previous):
-        # ... (keep existing on_network_peer_selection_changed code) ...
-        can_connect = False; can_disconnect = False; can_send_file = False; peer_data = None
-        if current:
-            peer_data = current.data(Qt.ItemDataRole.UserRole)
-            if peer_data:
-                is_connected = peer_data.get("connected", False)
-                can_connect = not is_connected
-                can_disconnect = is_connected
-                # Enable send file only if connected AND a file is chosen
-                can_send_file = is_connected and bool(self.selected_file)
-            else: logger.warning("Selected peer item has no associated data.")
-        self.connect_button.setEnabled(can_connect); self.disconnect_button.setEnabled(can_disconnect); self.send_file_button.setEnabled(can_send_file)
 
     def on_transfer_selection_changed(self, current, previous):
-        # ... (keep existing on_transfer_selection_changed code) ...
         can_pause = False; can_resume = False; progress = 0
+        
+        # Reset speed and time displays when selection changes
+        self.speed_value.setText("-- MB/s")
+        self.time_value.setText("--:--:--")
+        
         if current:
             transfer_id = current.data(Qt.ItemDataRole.UserRole)
             state_value = "Unknown"; transfer_obj = None
+            
             # Check active_transfers safely
             if NETWORKING_AVAILABLE and transfer_id in active_transfers:
                 transfer_obj = active_transfers.get(transfer_id) # Use get for safety
@@ -1291,6 +1240,23 @@ class MainWindow(QMainWindow):
                     can_resume = state_value == "Paused"  # Example dummy state
 
             progress = self.transfer_progress_cache.get(transfer_id, 0) # Get progress from cache
+            
+            # Update speed and time remaining displays for the selected transfer
+            if transfer_id in self.transfer_speed_cache:
+                speed_mbps = self.transfer_speed_cache.get(transfer_id, 0.0)
+                self.speed_value.setText(f"{speed_mbps:.2f} MB/s")
+                
+                # Calculate and display ETA
+                if transfer_obj and speed_mbps > 0:
+                    bytes_remaining = transfer_obj.total_size - transfer_obj.transferred_size
+                    eta_seconds = bytes_remaining / (speed_mbps * 1024 * 1024)
+                    
+                    eta_hours = int(eta_seconds // 3600)
+                    eta_minutes = int((eta_seconds % 3600) // 60)
+                    eta_seconds = int(eta_seconds % 60)
+                    self.time_value.setText(f"{eta_hours:02d}:{eta_minutes:02d}:{eta_seconds:02d}")
+                else:
+                    self.time_value.setText("--:--:--")
 
         self.pause_button.setEnabled(can_pause); self.resume_button.setEnabled(can_resume); self.progress_bar.setValue(progress)
 
@@ -1568,12 +1534,11 @@ class MainWindow(QMainWindow):
     def apply_styles(self):
         # --- Keep existing style definitions ---
         font_family="Segoe UI, Arial, sans-serif";dark_bg="#1e1e1e";medium_bg="#252526";light_bg="#2d2d2d";dark_border="#333333";medium_border="#444444";text_color="#e0e0e0";dim_text_color="#a0a0a0";accent_color="#ff6600";accent_hover="#e65c00";accent_pressed="#cc5200";secondary_btn_bg="#555555";secondary_btn_hover="#666666";secondary_btn_pressed="#444444"
-        # --- Add chat-specific styles ---
-        chat_input_bg = "#2d2d2d" # Background for the input field area
-        chat_input_border = "#444444"
-        chat_input_text = text_color
-        chat_history_bg = medium_bg # Background behind the bubbles
-
+       
+        # --- Updated chat-specific styles ---
+        chat_history_bg = "#212529"  # Darker background for better contrast with white text
+        chat_input_bg = "#343A40"    # Darker input area
+        
         # --- Define the full stylesheet ---
         stylesheet_template=f"""
         QMainWindow{{background-color:{dark_bg};color:{text_color};font-family:{font_family};}}
@@ -1584,7 +1549,7 @@ class MainWindow(QMainWindow):
         QTabBar::tab{{background:{dark_border};color:{dim_text_color};border:none;padding:10px 20px;font-size:14px;font-weight:bold;margin-right:2px;border-top-left-radius:5px;border-top-right-radius:5px;min-width: 100px;}}
         QTabBar::tab:selected{{background:{accent_color};color:#000000;}}
         QTabBar::tab:!selected{{margin-top:2px;padding:8px 20px;background:#3a3a3a;}}
-        QTabBar::tab:!selected:hover{{background:{medium_border};color:{text_color};}}
+        QTabBar::tab:!selected:hover{{background-color:{medium_border};color:{text_color};}}
 
         /* --- List Widgets --- */
         QListWidget{{background-color:{medium_bg};border:1px solid {dark_border};border-radius:5px;padding:5px;font-size:14px;outline:none;}}
@@ -1595,26 +1560,25 @@ class MainWindow(QMainWindow):
         QListWidget#chat_peer_list::item:selected{{ background-color: #4a4a4a; color: {text_color}; }} /* Different selection for chat peer list */
         QListWidget#chat_peer_list::item[font-weight=bold] {{ color: #ffffff; background-color: #383838; }} /* Style for unread bold items */
 
-
         /* --- Chat Area --- */
         QTextEdit[objectName^="chat_history"]{{
-            background-color: {chat_history_bg}; /* Background behind bubbles */
-            border: none; /* No border for the text area itself */
+            background-color: {chat_history_bg};
+            border: none;
             padding: 10px;
-            font-size: 14px;
-            color: {text_color}; /* Default text color (might be overridden by bubbles) */
+            font-size: 16px;
+            color: {text_color};
         }}
         QFrame#chat_input_frame {{
-            background-color: {medium_bg}; /* Match pane background */
-            border-top: 1px solid {dark_border}; /* Separator line */
+            background-color: {chat_history_bg};
+            border-top: 1px solid #222;
         }}
         QLineEdit[objectName^="chat_input"]{{
-            background-color:{light_bg};
-            border: 1px solid {dark_border};
-            border-radius: 18px; /* Rounded input */
-            padding: 8px 15px; /* Adjust padding */
+            background-color: {chat_input_bg};
+            border: none;
+            border-radius: 18px;
+            padding: 8px 15px;
             font-size: 14px;
-            color:{text_color};
+            color: {text_color};
         }}
         QLineEdit[objectName^="chat_input"]:focus{{
             border: 1px solid {accent_color};
@@ -1623,17 +1587,17 @@ class MainWindow(QMainWindow):
             background-color: {accent_color};
             color: white;
             border: none;
-            border-radius: 18px; /* Make it round */
-            min-width: 36px; /* Match fixed size */
+            border-radius: 18px;
+            min-width: 36px;
             max-width: 36px;
             min-height: 36px;
             max-height: 36px;
-            padding: 0; /* Remove padding for icon */
-            qproperty-iconSize: 20px 20px; /* Ensure icon size is respected */
+            padding: 0;
+            qproperty-iconSize: 20px 20px;
         }}
         QPushButton#chat_send_button:hover {{ background-color: {accent_hover}; }}
         QPushButton#chat_send_button:pressed {{ background-color: {accent_pressed}; }}
-        QPushButton#chat_send_button:disabled {{ background-color: #554433; qproperty-icon: url(./icons/send_disabled.png); }} /* Optional: disabled icon */
+        QPushButton#chat_send_button:disabled {{ background-color: #554433; }}
 
         /* --- General Widgets --- */
         QLineEdit{{background-color:{light_bg};border:1px solid {dark_border};border-radius:5px;padding:8px;font-size:14px;color:{text_color};}}
@@ -1653,6 +1617,46 @@ class MainWindow(QMainWindow):
         QPushButton#disconnect_button:pressed,QPushButton#choose_file_button:pressed,QPushButton#pause_button:pressed,QPushButton#decline_invite_button:pressed,QPushButton#deny_join_button:pressed{{background-color:rgba(255,102,0,0.2);color:{accent_pressed};border-color:{accent_pressed};}}
         QPushButton#disconnect_button:disabled,QPushButton#choose_file_button:disabled,QPushButton#pause_button:disabled,QPushButton#decline_invite_button:disabled,QPushButton#deny_join_button:disabled{{background-color:transparent;border-color:#666;color:#666;}}
 
+        /* --- Scrollbars (improved) --- */
+        QScrollBar:vertical{{
+            border: none;
+            background: {medium_bg};
+            width: 10px;
+            margin: 0px;
+        }}
+        QScrollBar::handle:vertical{{
+            background: {medium_border};
+            min-height: 20px;
+            border-radius: 5px;
+        }}
+        QScrollBar::handle:vertical:hover{{
+            background: #666;
+        }}
+        QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{
+            border: none;
+            background: none;
+            height: 0px;
+        }}
+        QScrollBar:horizontal{{
+            border: none;
+            background: {medium_bg};
+            height: 10px;
+            margin: 0px;
+        }}
+        QScrollBar::handle:horizontal{{
+            background: {medium_border};
+            min-width: 20px;
+            border-radius: 5px;
+        }}
+        QScrollBar::handle:horizontal:hover{{
+            background: #666;
+        }}
+        QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{{
+            border: none;
+            background: none;
+            width: 0px;
+        }}
+
         /* --- Other Widgets --- */
         QProgressBar{{border:1px solid {dark_border};border-radius:5px;text-align:center;font-size:12px;font-weight:bold;color:{text_color};background-color:{light_bg};}}
         QProgressBar::chunk{{background-color:{accent_color};border-radius:4px;margin:1px;}}
@@ -1669,21 +1673,240 @@ class MainWindow(QMainWindow):
         QSplitter::handle:horizontal{{width:1px;}}
         QSplitter::handle:vertical{{height:1px;}}
         QSplitter::handle:pressed{{background-color:{accent_color};}}
-        QScrollBar:vertical{{border:none;background:{medium_bg};width:10px;margin:0px;}}
-        QScrollBar::handle:vertical{{background:{medium_border};min-height:20px;border-radius:5px;}}
-        QScrollBar::handle:vertical:hover{{background:#555;}}
-        QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{border:none;background:none;height:0px;}}
-        QScrollBar:horizontal{{border:none;background:{medium_bg};height:10px;margin:0px;}}
-        QScrollBar::handle:horizontal{{background:{medium_border};min-width:20px;border-radius:5px;}}
-        QScrollBar::handle:horizontal:hover{{background:#555;}}
-        QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{{border:none;background:none;width:0px;}}
         QLabel{{color:{text_color};padding-bottom:2px;}}
         QLabel#error_label{{color:#FFAAAA;font-size:12px;qproperty-alignment:'AlignCenter';}}
         """
-        self.setStyleSheet(stylesheet_template) # Apply the full stylesheet
+        self.setStyleSheet(stylesheet_template)
         font=QFont(font_family.split(',')[0].strip(),10);QApplication.instance().setFont(font)
 
-# ... (Keep the rest of the code, including the LoginWindow and the main execution block) ...
+    def on_network_peer_selection_changed(self, current, previous):
+        """Updates the UI button states when a peer is selected/deselected in the network peer list."""
+        can_connect = False
+        can_disconnect = False
+        can_send_file = False
+        
+        if current:
+            # Get the peer data stored in the item
+            peer_data = current.data(Qt.ItemDataRole.UserRole)
+            if peer_data and isinstance(peer_data, dict):
+                is_connected = peer_data.get("connected", False)
+                
+                # Can connect if peer is discovered but not connected
+                can_connect = not is_connected
+                
+                # Can disconnect if already connected
+                can_disconnect = is_connected
+                
+                # Can send file if connected and a file is selected
+                can_send_file = is_connected and self.selected_file is not None
+        
+        # Update button states
+        self.connect_button.setEnabled(can_connect)
+        self.disconnect_button.setEnabled(can_disconnect)
+        self.send_file_button.setEnabled(can_send_file)
+        
+        if current:
+            peer_data = current.data(Qt.ItemDataRole.UserRole)
+            if peer_data:
+                logger.debug(f"Selected peer: {peer_data.get('display_name')} (Connected: {peer_data.get('connected')})")
+
+    def update_groups_display(self, groups_dict):
+        """Updates the groups list display with the current groups data."""
+        logger.debug(f"Updating groups display with {len(groups_dict)} groups.")
+        current_sel_name = self.groups_list.currentItem().data(Qt.ItemDataRole.UserRole) if self.groups_list.currentItem() else None
+        self.groups_list.clear()
+        new_sel_item = None
+        
+        if not groups_dict:
+            item = QListWidgetItem("No groups available")
+            item.setForeground(QColor("#888"))
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            self.groups_list.addItem(item)
+        else:
+            # Sort groups alphabetically
+            sorted_groups = sorted(groups_dict.keys())
+            own_ip = getattr(self.backend.discovery, 'own_ip', None) if NETWORKING_AVAILABLE and self.backend.discovery else None
+            
+            for group_name in sorted_groups:
+                info = groups_dict[group_name]
+                admin_ip = info.get("admin")
+                is_admin = (own_ip and own_ip == admin_ip)
+                member_count = len(info.get("members", set()))
+                
+                # Format display with role and member count
+                role_text = "👑 Admin" if is_admin else "👤 Member"
+                item_text = f"{group_name} ({role_text}, {member_count} members)"
+                
+                item = QListWidgetItem(item_text)
+                item.setData(Qt.ItemDataRole.UserRole, group_name)
+                item.setToolTip(f"Group: {group_name}\nYour role: {'Admin' if is_admin else 'Member'}\nMembers: {member_count}")
+                self.groups_list.addItem(item)
+                
+                if group_name == current_sel_name:
+                    new_sel_item = item
+        
+            if new_sel_item:
+                self.groups_list.setCurrentItem(new_sel_item)
+            else:
+                # If previously selected group is gone, update the UI
+                self.on_group_selected(None, None)
+
+    def update_invites_display(self, invites_list):
+        """Updates the pending invites list with current invitations."""
+        logger.debug(f"Updating invites display with {len(invites_list)} invites.")
+        self.pending_invites_list.clear()
+        
+        if not invites_list:
+            item = QListWidgetItem("No pending invitations")
+            item.setForeground(QColor("#888"))
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            self.pending_invites_list.addItem(item)
+        else:
+            for invite in invites_list:
+                group_name = invite.get("groupname", "Unknown")
+                inviter_ip = invite.get("inviter_ip", "Unknown")
+                inviter_name = get_peer_display_name(inviter_ip) if NETWORKING_AVAILABLE else f"User_{inviter_ip}"
+                
+                item_text = f"Join '{group_name}' from {inviter_name}"
+                item = QListWidgetItem(item_text)
+                item.setData(Qt.ItemDataRole.UserRole, invite)
+                item.setToolTip(f"Group: {group_name}\nInviter: {inviter_name}\nIP: {inviter_ip}")
+                self.pending_invites_list.addItem(item)
+        
+        # Update button states - disabled if no selection
+        self.accept_invite_button.setEnabled(False)
+        self.decline_invite_button.setEnabled(False)
+
+    def update_join_requests_display(self, requests_dict):
+        """Updates the join requests list with pending requests for groups you admin."""
+        logger.debug(f"Updating join requests display with requests for {len(requests_dict)} groups.")
+        self.join_requests_list.clear()
+        
+        # Get the currently selected group if any
+        selected_group = self.groups_list.currentItem().data(Qt.ItemDataRole.UserRole) if self.groups_list.currentItem() else None
+        
+        # Only show requests for the selected group if it's one you admin
+        if selected_group and selected_group in requests_dict:
+            requests = requests_dict[selected_group]
+            if not requests:
+                item = QListWidgetItem("No pending requests")
+                item.setForeground(QColor("#888"))
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                self.join_requests_list.addItem(item)
+            else:
+                for req in requests:
+                    requester_ip = req.get("requester_ip", "Unknown")
+                    requester_name = req.get("requester_username", f"User_{requester_ip}")
+                    
+                    item_text = f"{requester_name} wants to join"
+                    item = QListWidgetItem(item_text)
+                    # Store group name along with request data
+                    req_data = req.copy()
+                    req_data["groupname"] = selected_group
+                    item.setData(Qt.ItemDataRole.UserRole, req_data)
+                    item.setToolTip(f"User: {requester_name}\nIP: {requester_ip}")
+                    self.join_requests_list.addItem(item)
+        
+        # Update button states - disabled if no selection
+        self.approve_join_button.setEnabled(False)
+        self.deny_join_button.setEnabled(False)
+
+    def handle_connection_status_update(self, peer_ip, is_connected):
+        """Updates UI when a peer connection status changes."""
+        logger.debug(f"Connection status update: {peer_ip} - {'Connected' if is_connected else 'Disconnected'}")
+        # The peer list will be updated via the peer_list_updated_signal
+        # This method could add additional UI updates if needed
+        pass
+
+    def show_connection_request(self, display_name, username):
+        """Shows a dialog for incoming connection requests."""
+        reply = QMessageBox.question(
+            self, 
+            "Connection Request",
+            f"{display_name} wants to connect. Accept?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        # Extract IP from the connection request context if needed
+        peer_ip = None
+        for key in pending_approvals.keys() if NETWORKING_AVAILABLE else []:
+            if key[1] == username:
+                peer_ip = key[0]
+                break
+        
+        if reply == QMessageBox.StandardButton.Yes and peer_ip:
+            logger.info(f"Accepting connection request from {display_name}")
+            self.backend.approve_connection(peer_ip, username)
+        else:
+            logger.info(f"Rejecting connection request from {display_name}")
+            if peer_ip:
+                self.backend.deny_connection(peer_ip, username)
+
+    def display_received_message(self, sender, content):
+        """Displays a message received from a peer."""
+        logger.info(f"Received message from {sender}: {content[:50]}...")
+        
+        # Extract base username from sender's display name
+        base_username = sender.split("(")[0] if "(" in sender else sender
+        
+        # Save to chat history
+        self.chat_histories[base_username].append((sender, content))
+        
+        # If this chat is currently open, display the message
+        if base_username == self.current_chat_peer_username and base_username in self.chat_widgets:
+            history_widget = self.chat_widgets[base_username]['history']
+            self._append_message_to_history(history_widget, sender, content, is_own_message=False)
+        else:
+            # If chat is not open, highlight the peer in the chat list as having unread messages
+            for i in range(self.chat_peer_list.count()):
+                item = self.chat_peer_list.item(i)
+                item_username = item.data(Qt.ItemDataRole.UserRole)
+                if item_username == base_username:
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                    break
+            
+            # Optionally show a notification
+            self.update_status_bar(f"New message from {sender}")
+
+    def _append_message_to_history(self, history_widget, sender, content, is_own_message=False):
+        """Formats and adds a message to the chat history widget."""
+        cursor = history_widget.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        
+        # Create basic formats
+        bubble_format = QTextBlockFormat()
+        bubble_format.setAlignment(Qt.AlignmentFlag.AlignRight if is_own_message else Qt.AlignmentFlag.AlignLeft)
+        bubble_format.setTopMargin(8)
+        bubble_format.setBottomMargin(4)
+        
+        # Insert the message with appropriate formatting
+        cursor.insertBlock(bubble_format)
+        
+        # Insert sender name with color
+        name_format = QTextCharFormat()
+        name_format.setForeground(QBrush(QColor(self.sender_name_color)))
+        name_format.setFontWeight(QFont.Weight.Bold)
+        cursor.insertText(f"{sender}\n", name_format)
+        
+        # Insert message content
+        content_format = QTextCharFormat()
+        content_format.setForeground(QBrush(QColor(self.bubble_text_color)))
+        cursor.insertText(html.escape(content), content_format)
+        
+        # Insert timestamp
+        timestamp = time.strftime("%H:%M", time.localtime())
+        timestamp_format = QTextCharFormat()
+        timestamp_format.setForeground(QBrush(QColor(self.timestamp_color)))
+        timestamp_format.setFontItalic(True)
+        timestamp_format.setFontPointSize(9)
+        cursor.insertText(f"\n{timestamp}", timestamp_format)
+        
+        # Move view to the end to show the new message
+        history_widget.setTextCursor(cursor)
+        history_widget.ensureCursorVisible()
 
 if __name__ == "__main__":
     # Configure logging BEFORE creating QApplication if possible, or right after
