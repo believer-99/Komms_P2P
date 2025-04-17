@@ -9,7 +9,7 @@ import hashlib
 import netifaces
 import traceback
 import time
-import ssl # <-- Add ssl import
+import ssl
 from collections import defaultdict
 from PyQt6.QtCore import QEvent
 import threading
@@ -24,8 +24,7 @@ except ImportError as crypto_err:
     sys.exit(1)
 
 try:
-    # At the top with other PyQt6 imports
-    from PyQt6.QtGui import (QIcon, QFont, QCloseEvent, QPalette, QColor, QTextCursor, QTextCharFormat, QTextBlockFormat, QBrush) # <-- Ensure these are imported
+    from PyQt6.QtGui import (QIcon, QFont, QCloseEvent, QPalette, QColor, QTextCursor, QTextCharFormat, QTextBlockFormat, QBrush) 
                         
     from PyQt6.QtCore import (QCoreApplication, QObject, QRunnable, QSettings,
     QThreadPool, pyqtSignal, pyqtSlot, Qt, QThread, QTimer, QSize)
@@ -725,7 +724,7 @@ class MainWindow(QMainWindow):
                 border: none; 
                 padding: 8px;
                 color: #FFFFFF;
-                font-size: 16px;
+                font-size: 19px;
             """)
             history.setObjectName(f"chat_history_{peer_username}")
             layout.addWidget(history, 1)
@@ -733,7 +732,7 @@ class MainWindow(QMainWindow):
             # --- Input Area ---
             input_frame = QFrame()
             input_frame.setObjectName("chat_input_frame")
-            input_frame.setFixedHeight(60)  # Increased height for better usability
+            input_frame.setFixedHeight(70)  # Increased height for better usability with larger font
             input_layout = QHBoxLayout(input_frame)
             input_layout.setContentsMargins(10, 5, 10, 5)
             input_layout.setSpacing(10)
@@ -742,15 +741,15 @@ class MainWindow(QMainWindow):
             msg_input = QLineEdit()
             msg_input.setPlaceholderText(f"Message {peer_username}...")
             msg_input.setObjectName(f"chat_input_{peer_username}")
-            # Make input text larger too
-            msg_input.setStyleSheet("font-size: 16px;")
+            # Make input text larger
+            msg_input.setStyleSheet("font-size: 18px;")
 
             logger.debug(f"Creating send QPushButton for {peer_username}")
             send_btn = QPushButton()
             send_btn.setObjectName("chat_send_button")
             send_btn.setIcon(QIcon.fromTheme("mail-send", QIcon("./icons/send.png")))
-            send_btn.setFixedSize(QSize(44, 44))  # Larger button for easier clicking
-            send_btn.setIconSize(QSize(24, 24))   # Larger icon
+            send_btn.setFixedSize(QSize(50, 50))  # Larger button for easier clicking
+            send_btn.setIconSize(QSize(28, 28))   # Larger icon
             send_btn.setToolTip(f"Send message to {peer_username}")
             send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -842,7 +841,7 @@ class MainWindow(QMainWindow):
         transfer_icon.setPixmap(icon.pixmap(QSize(24, 24)))
         
         transfer_label=QLabel("Active Transfers")
-        transfer_label.setStyleSheet("font-weight: bold; font-size: 16px; margin-bottom: 5px;")
+        transfer_label.setStyleSheet("font-weight: bold; font-size: 18px; margin-bottom: 5px;")
         
         title_layout.addWidget(transfer_icon)
         title_layout.addWidget(transfer_label, 1)
@@ -873,7 +872,7 @@ class MainWindow(QMainWindow):
         progress_layout.setContentsMargins(8, 12, 8, 8)
         
         progress_label = QLabel("Transfer Progress")
-        progress_label.setStyleSheet("font-weight: bold; color: #bbbbbb; font-size: 13px;")
+        progress_label.setStyleSheet("font-weight: bold; color: #bbbbbb; font-size: 16px;")
         progress_layout.addWidget(progress_label)
         
         self.progress_bar=QProgressBar()
@@ -892,9 +891,9 @@ class MainWindow(QMainWindow):
         speed_layout.setSpacing(2)
         
         speed_title = QLabel("Transfer Speed:")
-        speed_title.setStyleSheet("color: #bbbbbb; font-size: 12px;")
+        speed_title.setStyleSheet("color: #bbbbbb; font-size: 14px;")
         self.speed_value = QLabel("-- MB/s")
-        self.speed_value.setStyleSheet("color: #ffffff; font-size: 14px; font-weight: bold;")
+        self.speed_value.setStyleSheet("color: #ffffff; font-size: 16px; font-weight: bold;")
         
         speed_layout.addWidget(speed_title)
         speed_layout.addWidget(self.speed_value)
@@ -906,9 +905,9 @@ class MainWindow(QMainWindow):
         time_layout.setSpacing(2)
         
         time_title = QLabel("Estimated Time:")
-        time_title.setStyleSheet("color: #bbbbbb; font-size: 12px;")
+        time_title.setStyleSheet("color: #bbbbbb; font-size: 14px;")
         self.time_value = QLabel("--:--:--")
-        self.time_value.setStyleSheet("color: #ffffff; font-size: 14px; font-weight: bold;")
+        self.time_value.setStyleSheet("color: #ffffff; font-size: 16px; font-weight: bold;")
         
         time_layout.addWidget(time_title)
         time_layout.addWidget(self.time_value)
@@ -944,7 +943,7 @@ class MainWindow(QMainWindow):
 
     def setup_peers_tab(self):
         # ... (keep existing setup_peers_tab code) ...
-        layout=QVBoxLayout(self.peers_tab);layout.setSpacing(15);layout.setContentsMargins(15,15,15,15);peer_label=QLabel("Discovered Network Peers:");peer_label.setStyleSheet("font-weight: bold; font-size: 14px; margin-bottom: 5px;");layout.addWidget(peer_label);self.network_peer_list=QListWidget();self.network_peer_list.setObjectName("network_peer_list");layout.addWidget(self.network_peer_list,1);conn_button_layout=QHBoxLayout();conn_button_layout.setSpacing(10);conn_button_layout.addStretch();self.connect_button=QPushButton("Connect");self.connect_button.setObjectName("connect_button");self.connect_button.setIcon(QIcon.fromTheme("network-connect",QIcon("./icons/connect.png")));self.disconnect_button=QPushButton("Disconnect");self.disconnect_button.setObjectName("disconnect_button");self.disconnect_button.setIcon(QIcon.fromTheme("network-disconnect",QIcon("./icons/disconnect.png")));conn_button_layout.addWidget(self.connect_button);conn_button_layout.addWidget(self.disconnect_button);layout.addLayout(conn_button_layout);separator=QFrame();separator.setFrameShape(QFrame.Shape.HLine);separator.setFrameShadow(QFrame.Shadow.Sunken);separator.setStyleSheet("border-color: #444;");layout.addWidget(separator);layout.addSpacing(10);file_label=QLabel("Send File to Selected Peer:");file_label.setStyleSheet("font-weight: bold; font-size: 14px; margin-bottom: 5px;");layout.addWidget(file_label);file_layout=QHBoxLayout();file_layout.setSpacing(10);self.selected_file_label=QLabel("No file chosen");self.selected_file_label.setStyleSheet("color: #aaa;");self.choose_file_button=QPushButton("Choose File");self.choose_file_button.setObjectName("choose_file_button");self.choose_file_button.setIcon(QIcon.fromTheme("document-open",QIcon("./icons/open.png")));self.send_file_button=QPushButton("Send File");self.send_file_button.setObjectName("send_file_button");self.send_file_button.setIcon(QIcon.fromTheme("document-send",QIcon("./icons/send_file.png")));file_layout.addWidget(self.selected_file_label,1);file_layout.addWidget(self.choose_file_button);file_layout.addWidget(self.send_file_button);layout.addLayout(file_layout);self.connect_button.setEnabled(False);self.disconnect_button.setEnabled(False);self.send_file_button.setEnabled(False);self.network_peer_list.currentItemChanged.connect(self.on_network_peer_selection_changed);self.connect_button.clicked.connect(self.connect_to_selected_peer);self.disconnect_button.clicked.connect(self.disconnect_from_selected_peer);self.choose_file_button.clicked.connect(self.choose_file_action);self.send_file_button.clicked.connect(self.send_selected_file_action);self.update_peer_list_display({})
+        layout=QVBoxLayout(self.peers_tab);layout.setSpacing(15);layout.setContentsMargins(15,15,15,15);peer_label=QLabel("Discovered Network Peers:");peer_label.setStyleSheet("font-weight: bold; font-size: 17px; margin-bottom: 5px;");layout.addWidget(peer_label);self.network_peer_list=QListWidget();self.network_peer_list.setObjectName("network_peer_list");layout.addWidget(self.network_peer_list,1);conn_button_layout=QHBoxLayout();conn_button_layout.setSpacing(10);conn_button_layout.addStretch();self.connect_button=QPushButton("Connect");self.connect_button.setObjectName("connect_button");self.connect_button.setIcon(QIcon.fromTheme("network-connect",QIcon("./icons/connect.png")));self.disconnect_button=QPushButton("Disconnect");self.disconnect_button.setObjectName("disconnect_button");self.disconnect_button.setIcon(QIcon.fromTheme("network-disconnect",QIcon("./icons/disconnect.png")));conn_button_layout.addWidget(self.connect_button);conn_button_layout.addWidget(self.disconnect_button);layout.addLayout(conn_button_layout);separator=QFrame();separator.setFrameShape(QFrame.Shape.HLine);separator.setFrameShadow(QFrame.Shadow.Sunken);separator.setStyleSheet("border-color: #444;");layout.addWidget(separator);layout.addSpacing(10);file_label=QLabel("Send File to Selected Peer:");file_label.setStyleSheet("font-weight: bold; font-size: 17px; margin-bottom: 5px;");layout.addWidget(file_label);file_layout=QHBoxLayout();file_layout.setSpacing(10);self.selected_file_label=QLabel("No file chosen");self.selected_file_label.setStyleSheet("color: #aaa;");self.choose_file_button=QPushButton("Choose File");self.choose_file_button.setObjectName("choose_file_button");self.choose_file_button.setIcon(QIcon.fromTheme("document-open",QIcon("./icons/open.png")));self.send_file_button=QPushButton("Send File");self.send_file_button.setObjectName("send_file_button");self.send_file_button.setIcon(QIcon.fromTheme("document-send",QIcon("./icons/send_file.png")));file_layout.addWidget(self.selected_file_label,1);file_layout.addWidget(self.choose_file_button);file_layout.addWidget(self.send_file_button);layout.addLayout(file_layout);self.connect_button.setEnabled(False);self.disconnect_button.setEnabled(False);self.send_file_button.setEnabled(False);self.network_peer_list.currentItemChanged.connect(self.on_network_peer_selection_changed);self.connect_button.clicked.connect(self.connect_to_selected_peer);self.disconnect_button.clicked.connect(self.disconnect_from_selected_peer);self.choose_file_button.clicked.connect(self.choose_file_action);self.send_file_button.clicked.connect(self.send_selected_file_action);self.update_peer_list_display({})
 
     def setup_groups_tab(self):
         # ... (keep existing setup_groups_tab code) ...
@@ -1542,18 +1541,18 @@ class MainWindow(QMainWindow):
         # --- Define the full stylesheet ---
         stylesheet_template=f"""
         QMainWindow{{background-color:{dark_bg};color:{text_color};font-family:{font_family};}}
-        QWidget{{color:{text_color};font-size:13px;}}
+        QWidget{{color:{text_color};font-size:16px;}}
 
         /* --- Tabs --- */
         QTabWidget::pane{{border:none;background-color:{medium_bg};}}
-        QTabBar::tab{{background:{dark_border};color:{dim_text_color};border:none;padding:10px 20px;font-size:14px;font-weight:bold;margin-right:2px;border-top-left-radius:5px;border-top-right-radius:5px;min-width: 100px;}}
+        QTabBar::tab{{background:{dark_border};color:{dim_text_color};border:none;padding:12px 24px;font-size:16px;font-weight:bold;margin-right:2px;border-top-left-radius:5px;border-top-right-radius:5px;min-width: 120px;}}
         QTabBar::tab:selected{{background:{accent_color};color:#000000;}}
-        QTabBar::tab:!selected{{margin-top:2px;padding:8px 20px;background:#3a3a3a;}}
+        QTabBar::tab:!selected{{margin-top:2px;padding:10px 24px;background:#3a3a3a;}}
         QTabBar::tab:!selected:hover{{background-color:{medium_border};color:{text_color};}}
 
         /* --- List Widgets --- */
-        QListWidget{{background-color:{medium_bg};border:1px solid {dark_border};border-radius:5px;padding:5px;font-size:14px;outline:none;}}
-        QListWidget::item{{padding:7px 5px;border-radius:3px;}}
+        QListWidget{{background-color:{medium_bg};border:1px solid {dark_border};border-radius:5px;padding:5px;font-size:16px;outline:none;}}
+        QListWidget::item{{padding:9px 7px;border-radius:3px;}}
         QListWidget::item:selected{{background-color:{accent_color};color:#000000;font-weight:bold;}}
         QListWidget::item:!selected:hover{{background-color:{medium_border};}}
         QListWidget#chat_peer_list{{border-right:1px solid {dark_border}; border-top-right-radius: 0; border-bottom-right-radius: 0;}} /* Style peer list */
@@ -1564,8 +1563,8 @@ class MainWindow(QMainWindow):
         QTextEdit[objectName^="chat_history"]{{
             background-color: {chat_history_bg};
             border: none;
-            padding: 10px;
-            font-size: 16px;
+            padding: 12px;
+            font-size: 19px;
             color: {text_color};
         }}
         QFrame#chat_input_frame {{
@@ -1575,9 +1574,9 @@ class MainWindow(QMainWindow):
         QLineEdit[objectName^="chat_input"]{{
             background-color: {chat_input_bg};
             border: none;
-            border-radius: 18px;
-            padding: 8px 15px;
-            font-size: 14px;
+            border-radius: 22px;
+            padding: 10px 18px;
+            font-size: 18px;
             color: {text_color};
         }}
         QLineEdit[objectName^="chat_input"]:focus{{
@@ -1587,22 +1586,22 @@ class MainWindow(QMainWindow):
             background-color: {accent_color};
             color: white;
             border: none;
-            border-radius: 18px;
-            min-width: 36px;
-            max-width: 36px;
-            min-height: 36px;
-            max-height: 36px;
+            border-radius: 22px;
+            min-width: 44px;
+            max-width: 44px;
+            min-height: 44px;
+            max-height: 44px;
             padding: 0;
-            qproperty-iconSize: 20px 20px;
+            qproperty-iconSize: 24px 24px;
         }}
         QPushButton#chat_send_button:hover {{ background-color: {accent_hover}; }}
         QPushButton#chat_send_button:pressed {{ background-color: {accent_pressed}; }}
         QPushButton#chat_send_button:disabled {{ background-color: #554433; }}
 
         /* --- General Widgets --- */
-        QLineEdit{{background-color:{light_bg};border:1px solid {dark_border};border-radius:5px;padding:8px;font-size:14px;color:{text_color};}}
+        QLineEdit{{background-color:{light_bg};border:1px solid {dark_border};border-radius:5px;padding:10px;font-size:16px;color:{text_color};}}
         QLineEdit:focus{{border:1px solid {accent_color};}}
-        QPushButton{{background-color:{medium_border};color:{text_color};border:none;border-radius:5px;padding:8px 15px;font-size:14px;font-weight:bold;min-width:90px;outline:none;}}
+        QPushButton{{background-color:{medium_border};color:{text_color};border:none;border-radius:5px;padding:10px 18px;font-size:16px;font-weight:bold;min-width:100px;outline:none;}}
         QPushButton:hover{{background-color:{secondary_btn_hover};}}
         QPushButton:pressed{{background-color:{secondary_btn_pressed};}}
         QPushButton:disabled{{background-color:#444;color:#888;}}
@@ -1621,13 +1620,13 @@ class MainWindow(QMainWindow):
         QScrollBar:vertical{{
             border: none;
             background: {medium_bg};
-            width: 10px;
+            width: 12px;
             margin: 0px;
         }}
         QScrollBar::handle:vertical{{
             background: {medium_border};
-            min-height: 20px;
-            border-radius: 5px;
+            min-height: 24px;
+            border-radius: 6px;
         }}
         QScrollBar::handle:vertical:hover{{
             background: #666;
@@ -1640,13 +1639,13 @@ class MainWindow(QMainWindow):
         QScrollBar:horizontal{{
             border: none;
             background: {medium_bg};
-            height: 10px;
+            height: 12px;
             margin: 0px;
         }}
         QScrollBar::handle:horizontal{{
             background: {medium_border};
-            min-width: 20px;
-            border-radius: 5px;
+            min-width: 24px;
+            border-radius: 6px;
         }}
         QScrollBar::handle:horizontal:hover{{
             background: #666;
@@ -1658,26 +1657,26 @@ class MainWindow(QMainWindow):
         }}
 
         /* --- Other Widgets --- */
-        QProgressBar{{border:1px solid {dark_border};border-radius:5px;text-align:center;font-size:12px;font-weight:bold;color:{text_color};background-color:{light_bg};}}
+        QProgressBar{{border:1px solid {dark_border};border-radius:5px;text-align:center;font-size:14px;font-weight:bold;color:{text_color};background-color:{light_bg};}}
         QProgressBar::chunk{{background-color:{accent_color};border-radius:4px;margin:1px;}}
-        QStatusBar{{background-color:{dark_bg};color:{dim_text_color};font-size:12px;border-top:1px solid {dark_border};}}
+        QStatusBar{{background-color:{dark_bg};color:{dim_text_color};font-size:14px;border-top:1px solid {dark_border};}}
         QStatusBar::item{{border:none;}}
         QMenuBar{{background-color:{medium_bg};color:{text_color};border-bottom:1px solid {dark_border};}}
-        QMenuBar::item{{background:transparent;padding:5px 10px;font-size:13px;}}
+        QMenuBar::item{{background:transparent;padding:6px 12px;font-size:15px;}}
         QMenuBar::item:selected{{background:{medium_border};}}
-        QMenu{{background-color:{medium_bg};border:1px solid {medium_border};color:{text_color};padding:5px;}}
-        QMenu::item{{padding:8px 20px;}}
+        QMenu{{background-color:{medium_bg};border:1px solid {medium_border};color:{text_color};padding:6px;}}
+        QMenu::item{{padding:10px 22px;}}
         QMenu::item:selected{{background-color:{accent_color};color:#000000;}}
-        QMenu::separator{{height:1px;background:{medium_border};margin:5px 10px;}}
+        QMenu::separator{{height:1px;background:{medium_border};margin:6px 12px;}}
         QSplitter::handle{{background-color:{dark_border};}}
         QSplitter::handle:horizontal{{width:1px;}}
         QSplitter::handle:vertical{{height:1px;}}
         QSplitter::handle:pressed{{background-color:{accent_color};}}
-        QLabel{{color:{text_color};padding-bottom:2px;}}
-        QLabel#error_label{{color:#FFAAAA;font-size:12px;qproperty-alignment:'AlignCenter';}}
+        QLabel{{color:{text_color};padding-bottom:2px;font-size:16px;}}
+        QLabel#error_label{{color:#FFAAAA;font-size:14px;qproperty-alignment:'AlignCenter';}}
         """
         self.setStyleSheet(stylesheet_template)
-        font=QFont(font_family.split(',')[0].strip(),10);QApplication.instance().setFont(font)
+        font=QFont(font_family.split(',')[0].strip(),13);QApplication.instance().setFont(font)
 
     def on_network_peer_selection_changed(self, current, previous):
         """Updates the UI button states when a peer is selected/deselected in the network peer list."""
@@ -1879,8 +1878,8 @@ class MainWindow(QMainWindow):
         # Create basic formats
         bubble_format = QTextBlockFormat()
         bubble_format.setAlignment(Qt.AlignmentFlag.AlignRight if is_own_message else Qt.AlignmentFlag.AlignLeft)
-        bubble_format.setTopMargin(8)
-        bubble_format.setBottomMargin(4)
+        bubble_format.setTopMargin(10)
+        bubble_format.setBottomMargin(6)
         
         # Insert the message with appropriate formatting
         cursor.insertBlock(bubble_format)
@@ -1901,7 +1900,7 @@ class MainWindow(QMainWindow):
         timestamp_format = QTextCharFormat()
         timestamp_format.setForeground(QBrush(QColor(self.timestamp_color)))
         timestamp_format.setFontItalic(True)
-        timestamp_format.setFontPointSize(9)
+        timestamp_format.setFontPointSize(11)  # Increased from 9
         cursor.insertText(f"\n{timestamp}", timestamp_format)
         
         # Move view to the end to show the new message
