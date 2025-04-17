@@ -1139,6 +1139,10 @@ class MainWindow(QMainWindow):
         # Get transfer info for calculations
         t_info = active_transfers.get(transfer_id) if NETWORKING_AVAILABLE else None
         if t_info:
+            # Check current state
+            current_state = getattr(t_info, 'state', None)
+            is_paused = (current_state == TransferState.PAUSED)
+            
             # Initialize tracking for this transfer if needed
             if transfer_id not in self.transfer_start_times:
                 self.transfer_start_times[transfer_id] = current_time
@@ -1146,40 +1150,39 @@ class MainWindow(QMainWindow):
                 self.transfer_bytes_last[transfer_id] = 0
                 self.transfer_speed_cache[transfer_id] = 0.0
             
-            # Calculate transfer speed (MB/s)
-            transferred_bytes = getattr(t_info, 'transferred_size', 0)
-            total_bytes = getattr(t_info, 'total_size', 1)  # Avoid division by zero
-            
-            # Only update speed every second to avoid fluctuations
-            time_since_last = current_time - self.transfer_last_update[transfer_id]
-            if time_since_last >= 0.5:  # Update every half second
-                bytes_since_last = transferred_bytes - self.transfer_bytes_last[transfer_id]
-                speed_mbps = (bytes_since_last / time_since_last) / (1024 * 1024) if time_since_last > 0 else 0
+            # Calculate transfer speed only if not paused
+            if not is_paused:
+                # Calculate transfer speed (MB/s)
+                transferred_bytes = getattr(t_info, 'transferred_size', 0)
+                total_bytes = getattr(t_info, 'total_size', 1)  # Avoid division by zero
                 
-                # Use a weighted average to smooth the speed (70% new, 30% old)
-                if self.transfer_speed_cache[transfer_id] > 0:
-                    speed_mbps = 0.7 * speed_mbps + 0.3 * self.transfer_speed_cache[transfer_id]
-                
-                self.transfer_speed_cache[transfer_id] = speed_mbps
-                self.transfer_last_update[transfer_id] = current_time
-                self.transfer_bytes_last[transfer_id] = transferred_bytes
+                # Only update speed every half second to avoid fluctuations
+                time_since_last = current_time - self.transfer_last_update[transfer_id]
+                if time_since_last >= 0.5:  # Update every half second
+                    bytes_since_last = transferred_bytes - self.transfer_bytes_last[transfer_id]
+                    speed_mbps = (bytes_since_last / time_since_last) / (1024 * 1024) if time_since_last > 0 else 0
+                    
+                    # Use a weighted average to smooth the speed (70% new, 30% old)
+                    if self.transfer_speed_cache[transfer_id] > 0:
+                        speed_mbps = 0.7 * speed_mbps + 0.3 * self.transfer_speed_cache[transfer_id]
+                    
+                    self.transfer_speed_cache[transfer_id] = speed_mbps
+                    self.transfer_last_update[transfer_id] = current_time
+                    self.transfer_bytes_last[transfer_id] = transferred_bytes
             
-            # Calculate estimated time remaining (in seconds)
-            speed = self.transfer_speed_cache[transfer_id]
-            if speed > 0:
-                bytes_remaining = total_bytes - transferred_bytes
-                eta_seconds = bytes_remaining / (speed * 1024 * 1024)
-            else:
-                eta_seconds = float('inf')
-            
-            # Format time remaining as HH:MM:SS
-            if eta_seconds == float('inf'):
-                eta_formatted = "--:--:--"
-            else:
-                eta_hours = int(eta_seconds // 3600)
-                eta_minutes = int((eta_seconds % 3600) // 60)
-                eta_seconds = int(eta_seconds % 60)
-                eta_formatted = f"{eta_hours:02d}:{eta_minutes:02d}:{eta_seconds:02d}"
+            # Calculate ETA if not paused and we have a speed
+            eta_formatted = "--:--:--"
+            if not is_paused:
+                speed = self.transfer_speed_cache.get(transfer_id, 0.0)
+                if speed > 0:
+                    bytes_remaining = t_info.total_size - t_info.transferred_size
+                    eta_seconds = bytes_remaining / (speed * 1024 * 1024)
+                    
+                    # Format time remaining as HH:MM:SS
+                    eta_hours = int(eta_seconds // 3600)
+                    eta_minutes = int((eta_seconds % 3600) // 60)
+                    eta_seconds = int(eta_seconds % 60)
+                    eta_formatted = f"{eta_hours:02d}:{eta_minutes:02d}:{eta_seconds:02d}"
         
         # Update UI if this transfer is selected
         current_item = self.transfer_list.currentItem()
@@ -1188,9 +1191,13 @@ class MainWindow(QMainWindow):
             
             # Update speed and ETA displays
             if t_info:
-                speed_mbps = self.transfer_speed_cache.get(transfer_id, 0.0)
-                self.speed_value.setText(f"{speed_mbps:.2f} MB/s")
-                self.time_value.setText(eta_formatted)
+                if is_paused:
+                    self.speed_value.setText("PAUSED")
+                    self.time_value.setText("--:--:--")
+                else:
+                    speed_mbps = self.transfer_speed_cache.get(transfer_id, 0.0)
+                    self.speed_value.setText(f"{speed_mbps:.2f} MB/s")
+                    self.time_value.setText(eta_formatted)
             else:
                 self.speed_value.setText("-- MB/s")
                 self.time_value.setText("--:--:--")
@@ -1206,9 +1213,13 @@ class MainWindow(QMainWindow):
                 direction_symbol = "⬆️ Send" if direction == "send" else "⬇️ Recv"
                 total_size_mb = t_info.total_size / (1024 * 1024)
                 
-                # Add speed to the display
-                speed_mbps = self.transfer_speed_cache.get(transfer_id, 0.0)
-                item_text = f"{direction_symbol} to {peer_name}: {file_name} ({total_size_mb:.2f} MB) - {state} [{progress}%] - {speed_mbps:.2f} MB/s"
+                # Add appropriate status to the display
+                if is_paused:
+                    item_text = f"{direction_symbol} to {peer_name}: {file_name} ({total_size_mb:.2f} MB) - {state} [{progress}%] - PAUSED"
+                else:
+                    speed_mbps = self.transfer_speed_cache.get(transfer_id, 0.0)
+                    item_text = f"{direction_symbol} to {peer_name}: {file_name} ({total_size_mb:.2f} MB) - {state} [{progress}%] - {speed_mbps:.2f} MB/s"
+                
                 current_item.setText(item_text)
 
     def on_transfer_selection_changed(self, current, previous):
@@ -1398,96 +1409,305 @@ class MainWindow(QMainWindow):
         if not ip: self.update_status_bar(f"Cannot send: IP not found for {uname}."); return
         if not data.get("connected", False): self.update_status_bar(f"Cannot send: Not connected to {uname}."); return
 
-        ws = connections.get(ip) if NETWORKING_AVAILABLE else object() # Use object() as dummy placeholder if needed
+        ws = connections.get(ip) if NETWORKING_AVAILABLE else object() # Use object() as dummy placeholder if neededm()
         if not ws and NETWORKING_AVAILABLE: self.update_status_bar(f"Cannot send: Connection object missing for {uname}."); logger.error(f"Connection object missing for {ip} in connections state."); return
 
         peers_dict = {ip: ws}
         fname = os.path.basename(self.selected_file)
-        self.update_status_bar(f"Initiating send '{fname}' to {uname}...")
+        self.update_status_bar(f"Initiating send '{fname}' to {uname}...").UserRole
         # Switch to transfers tab after initiating
-        self.tab_widget.setCurrentWidget(self.transfers_tab)
+        self.tab_widget.setCurrentWidget(self.transfers_tab)            
+        self.update_status_bar("Cannot pause: Transfer not found or network unavailable.")
         self.backend.trigger_send_file(self.selected_file, peers_dict)
 
     def pause_transfer(self):
-        # ... (keep existing pause_transfer code) ...
-        selected_item = self.transfer_list.currentItem();
-        if not selected_item: self.update_status_bar("No transfer selected."); return
+        """Request to pause the selected file transfer."""
+        selected_item = self.transfer_list.currentItem()
+        if not selected_item:
+            self.update_status_bar("No transfer selected.")
+            return
+            
         transfer_id = selected_item.data(Qt.ItemDataRole.UserRole)
-        if not NETWORKING_AVAILABLE or transfer_id not in active_transfers: self.update_status_bar("Cannot pause: Transfer not found or network unavailable."); return
+        if not NETWORKING_AVAILABLE or transfer_id not in active_transfers:
+            self.update_status_bar("Cannot pause: Transfer not found or network unavailable.")
+            return
+            
         transfer_obj = active_transfers.get(transfer_id)
-        if not transfer_obj: self.update_status_bar("Cannot pause: Transfer object missing."); logger.error(f"Transfer object missing for ID {transfer_id} in pause_transfer"); return
+        if not transfer_obj:
+            self.update_status_bar("Cannot pause: Transfer object missing.")
+            logger.error(f"Transfer object missing for ID {transfer_id} in pause_transfer")
+            return
+
+        # Only allow pausing if transfer is in progress
+        if transfer_obj.state != TransferState.IN_PROGRESS:
+            self.update_status_bar(f"Cannot pause: Transfer is not in progress (state: {transfer_obj.state.value}).")
+            return
+
+        # Disable both buttons immediately to prevent multiple clicks
+        self.pause_button.setEnabled(False)
+        self.resume_button.setEnabled(False)
+        
+        # Update item text to show pausing in progress
+        current_text = selected_item.text()
+        # Remove any existing status text before adding new one
+        original_text = current_text
+        for status in [" - PAUSED", " - PAUSING...", " - RESUMING..."]:
+            original_text = original_text.replace(status, "")
+        selected_item.setText(f"{original_text} - PAUSING...")
 
         self.update_status_bar(f"Pausing transfer {os.path.basename(transfer_obj.file_path)}...")
-        def on_finished(): self.update_status_bar("Transfer pause request sent."); logger.info(f"UI: Transfer {transfer_id[:8]} pause completed/requested"); self.backend.emit_transfers_update() # Refresh list sooner
-        def on_error(err): self.update_status_bar(f"Failed to pause: {err[1]}"); logger.error(f"UI: Transfer {transfer_id[:8]} pause failed: {err}")
-
-        worker = Worker(transfer_obj.pause, loop=self.backend.loop) # Assume pause is async
-        worker.signals.finished.connect(on_finished); worker.signals.error.connect(on_error)
+        
+        async def execute_pause():
+            try:
+                return await transfer_obj.pause()
+            except Exception as e:
+                logger.error(f"Error in pause operation: {e}")
+                return False
+        
+        def on_finished(result):
+            if result:
+                self.update_status_bar("Transfer paused successfully.")
+                logger.info(f"UI: Transfer {transfer_id[:8]} pause completed")
+                self.backend.emit_transfers_update() # Refresh list sooner
+                
+                # Update current progress display with pause state
+                current_progress = self.transfer_progress_cache.get(transfer_id, 0)
+                self.update_transfer_progress_display(transfer_id, current_progress)
+                
+                # Update button states - enable resume button
+                self.pause_button.setEnabled(False)
+                self.resume_button.setEnabled(True)
+                
+                # Update item text to show PAUSED
+                selected_item.setText(f"{original_text} - PAUSED")
+            else:
+                self.update_status_bar("Failed to pause transfer. May be in wrong state or completed.")
+                logger.warning(f"UI: Transfer {transfer_id[:8]} pause failed or rejected")
+                
+                # Restore original text
+                selected_item.setText(original_text)
+                
+                # Update button states based on current transfer state
+                self.on_transfer_selection_changed(selected_item, None)
+                
+        def on_error(err):
+            self.update_status_bar(f"Failed to pause: {err[1]}")
+            logger.error(f"UI: Transfer {transfer_id[:8]} pause failed: {err}")
+            
+            # Restore original text
+            selected_item.setText(original_text)
+            
+            # Update button states based on current transfer state
+            self.on_transfer_selection_changed(selected_item, None)
+        
+        worker = Worker(execute_pause, loop=self.backend.loop)
+        worker.signals.result.connect(on_finished)
+        worker.signals.error.connect(on_error)
         QThreadPool.globalInstance().start(worker)
-
 
     def resume_transfer(self):
-        # ... (keep existing resume_transfer code) ...
-        selected_item = self.transfer_list.currentItem();
-        if not selected_item: self.update_status_bar("No transfer selected."); return
+        """Request to resume the selected file transfer."""
+        selected_item = self.transfer_list.currentItem()
+        if not selected_item:
+            self.update_status_bar("No transfer selected.")
+            return
+            
         transfer_id = selected_item.data(Qt.ItemDataRole.UserRole)
-        if not NETWORKING_AVAILABLE or transfer_id not in active_transfers: self.update_status_bar("Cannot resume: Transfer not found or network unavailable."); return
+        if not NETWORKING_AVAILABLE or transfer_id not in active_transfers:
+            self.update_status_bar("Cannot resume: Transfer not found or network unavailable.")
+            return
+            
         transfer_obj = active_transfers.get(transfer_id)
-        if not transfer_obj: self.update_status_bar("Cannot resume: Transfer object missing."); logger.error(f"Transfer object missing for ID {transfer_id} in resume_transfer"); return
+        if not transfer_obj:
+            self.update_status_bar("Cannot resume: Transfer object missing.")
+            logger.error(f"Transfer object missing for ID {transfer_id} in resume_transfer")
+            return
+
+        # Only allow resuming if transfer is paused
+        if transfer_obj.state != TransferState.PAUSED:
+            self.update_status_bar(f"Cannot resume: Transfer is not paused (state: {transfer_obj.state.value}).")
+            return
+
+        # Disable both buttons immediately to prevent multiple clicks
+        self.pause_button.setEnabled(False)
+        self.resume_button.setEnabled(False)
+        
+        # Update item text to show resuming in progress
+        current_text = selected_item.text()
+        # Remove any existing status text before adding new one
+        original_text = current_text
+        for status in [" - PAUSED", " - PAUSING...", " - RESUMING..."]:
+            original_text = original_text.replace(status, "")
+        selected_item.setText(f"{original_text} - RESUMING...")
 
         self.update_status_bar(f"Resuming transfer {os.path.basename(transfer_obj.file_path)}...")
-        def on_finished(): self.update_status_bar("Transfer resume request sent."); logger.info(f"UI: Transfer {transfer_id[:8]} resume completed/requested"); self.backend.emit_transfers_update() # Refresh list sooner
-        def on_error(err): self.update_status_bar(f"Failed to resume: {err[1]}"); logger.error(f"UI: Transfer {transfer_id[:8]} resume failed: {err}")
-
-        worker = Worker(transfer_obj.resume, loop=self.backend.loop) # Assume resume is async
-        worker.signals.finished.connect(on_finished); worker.signals.error.connect(on_error)
+        
+        async def execute_resume():
+            try:
+                return await transfer_obj.resume()
+            except Exception as e:
+                logger.error(f"Error in resume operation: {e}")
+                return False
+        
+        def on_finished(result):
+            if result:
+                self.update_status_bar("Transfer resumed successfully.")
+                logger.info(f"UI: Transfer {transfer_id[:8]} resume completed")
+                self.backend.emit_transfers_update() # Refresh list sooner
+                
+                # Update current progress display with resume state
+                current_progress = self.transfer_progress_cache.get(transfer_id, 0)
+                self.update_transfer_progress_display(transfer_id, current_progress)
+                
+                # Update button states - enable pause button
+                self.pause_button.setEnabled(True)
+                self.resume_button.setEnabled(False)
+                
+                # Update item text to remove PAUSED
+                selected_item.setText(original_text)
+            else:
+                self.update_status_bar("Failed to resume transfer. May be in wrong state or completed.")
+                logger.warning(f"UI: Transfer {transfer_id[:8]} resume failed or rejected")
+                
+                # Restore original text with PAUSED if appropriate
+                if transfer_obj.state == TransferState.PAUSED:
+                    selected_item.setText(f"{original_text} - PAUSED")
+                else:
+                    selected_item.setText(original_text)
+                
+                # Update button states based on current transfer state
+                self.on_transfer_selection_changed(selected_item, None)
+                
+        def on_error(err):
+            self.update_status_bar(f"Failed to resume: {err[1]}")
+            logger.error(f"UI: Transfer {transfer_id[:8]} resume failed: {err}")
+            
+            # Restore original text with PAUSED state
+            selected_item.setText(f"{original_text} - PAUSED")
+            
+            # Update button states based on current transfer state
+            self.on_transfer_selection_changed(selected_item, None)
+        
+        worker = Worker(execute_resume, loop=self.backend.loop)
+        worker.signals.result.connect(on_finished)
+        worker.signals.error.connect(on_error)
         QThreadPool.globalInstance().start(worker)
 
-    def on_group_selected(self, current, previous):
-        # ... (keep existing on_group_selected code) ...
-        self.group_members_list.clear(); self.join_requests_list.clear(); self.admin_section_widget.setVisible(False); self.approve_join_button.setEnabled(False); self.deny_join_button.setEnabled(False)
+    def on_transfer_selection_changed(self, current, previous):
+        can_pause = False; can_resume = False; progress = 0
+        
+        # Reset speed and time displays when selection changes
+        self.speed_value.setText("-- MB/s")
+        self.time_value.setText("--:--:--")
+        
         if current:
-            groupname = current.data(Qt.ItemDataRole.UserRole); self.selected_group_label.setText(f"Group: {groupname}")
+            transfer_id = current.data(Qt.ItemDataRole.UserRole)
+            state_value = "Unknown"; transfer_obj = None
+            
+            # Check active_transfers safely
+            if NETWORKING_AVAILABLE and transfer_id in active_transfers:
+                transfer_obj = active_transfers.get(transfer_id) # Use get for safety
+            # Add dummy check if needed
+            # elif not NETWORKING_AVAILABLE and transfer_id in active_transfers: transfer_obj = active_transfers[transfer_id]
+
+            if transfer_obj:
+                state_value = getattr(getattr(transfer_obj, 'state', None), 'value', 'Unknown')
+                # Use the actual Enum for comparison if networking is available
+                if NETWORKING_AVAILABLE:
+                    can_pause = transfer_obj.state == TransferState.IN_PROGRESS
+                    can_resume = transfer_obj.state == TransferState.PAUSED
+                else: # Fallback to string comparison for dummy mode if needed
+                    can_pause = state_value == "Sending" # Example dummy state
+                    can_resume = state_value == "Paused"  # Example dummy state
+
+            progress = self.transfer_progress_cache.get(transfer_id, 0) # Get progress from cache
+            
+            # Update speed and time remaining displays for the selected transfer
+            if transfer_id in self.transfer_speed_cache:
+                speed_mbps = self.transfer_speed_cache.get(transfer_id, 0.0)
+                self.speed_value.setText(f"{speed_mbps:.2f} MB/s")
+                
+                # Calculate and display ETA
+                if transfer_obj and speed_mbps > 0:
+                    bytes_remaining = transfer_obj.total_size - transfer_obj.transferred_size
+                    eta_seconds = bytes_remaining / (speed_mbps * 1024 * 1024)
+                    
+                    eta_hours = int(eta_seconds // 3600)
+                    eta_minutes = int((eta_seconds % 3600) // 60)
+                    eta_seconds = int(eta_seconds % 60)
+                    self.time_value.setText(f"{eta_hours:02d}:{eta_minutes:02d}:{eta_seconds:02d}")
+                else:
+                    self.time_value.setText("--:--:--")
+
+        self.pause_button.setEnabled(can_pause); self.resume_button.setEnabled(can_resume); self.progress_bar.setValue(progress)
+
+
+    def on_group_selected(self, current, previous):
+        """Handles when a group is selected in the groups list."""
+        self.group_members_list.clear()
+        self.join_requests_list.clear() 
+        self.admin_section_widget.setVisible(False)
+        self.approve_join_button.setEnabled(False)
+        self.deny_join_button.setEnabled(False)
+        
+        if current:
+            # Get the selected group name
+            groupname = current.data(Qt.ItemDataRole.UserRole)
+            self.selected_group_label.setText(f"Group: {groupname}")
+            
+            # Get group info
             info = groups.get(groupname) if NETWORKING_AVAILABLE else None
             if info:
+                # Get and display members
                 member_ips = sorted(list(info.get("members", set())))
-                if not member_ips: self.group_members_list.addItem("No members yet.")
+                if not member_ips:
+                    self.group_members_list.addItem("No members yet.")
                 else:
                     for m_ip in member_ips:
                         m_name = get_peer_display_name(m_ip) if NETWORKING_AVAILABLE else f"Member_{m_ip}"
-                        self.group_members_list.addItem(f"{m_name}") # Simpler display
-                        self.group_members_list.item(self.group_members_list.count() - 1).setToolTip(f"IP: {m_ip}") # Tooltip for IP
-
+                        self.group_members_list.addItem(f"{m_name}")  # Simpler display
+                        self.group_members_list.item(self.group_members_list.count() - 1).setToolTip(f"IP: {m_ip}")  # Tooltip for IP
+                
+                # Check if current user is the admin
                 own_ip = getattr(self.backend.discovery, 'own_ip', None) if NETWORKING_AVAILABLE and self.backend.discovery else None
                 is_admin = (own_ip and own_ip == info.get("admin"))
                 self.admin_section_widget.setVisible(is_admin)
+                
                 if is_admin:
                     logger.debug(f"User is admin of '{groupname}', showing admin section and fetching join requests.")
-                    self.backend.emit_join_requests_update() # Trigger update for this specific group
+                    self.backend.emit_join_requests_update()  # Trigger update for this specific group
                 else:
                     logger.debug(f"User is not admin of '{groupname}', hiding admin section.")
-            else: logger.warning(f"No group info found for {groupname} in shared state `groups`")
-        else: self.selected_group_label.setText("Selected Group: None")
-
+            else:
+                logger.warning(f"No group info found for {groupname} in shared state `groups`")
+        else:
+            self.selected_group_label.setText("Selected Group: None")
 
     def on_invite_selected(self, current, previous):
         # ... (keep existing on_invite_selected code) ...
         self.accept_invite_button.setEnabled(current is not None); self.decline_invite_button.setEnabled(current is not None)
-
     def on_join_request_selected(self, current, previous):
         # ... (keep existing on_join_request_selected code) ...
-        self.approve_join_button.setEnabled(current is not None); self.deny_join_button.setEnabled(current is not None)
-
+        self.approve_join_button.setEnabled(current is not None); self.deny_join_button.setEnabled(current is not None)        # Disable both buttons immediately to prevent multiple clicks
+        self.pause_button.setEnabled(False)
     def create_group_action(self):
-        # ... (keep existing create_group_action code) ...
+        """Creates a new group with the current user as admin."""
         name = self.create_group_input.text().strip()
-        if not name: self.update_status_bar("Enter group name."); self.create_group_input.setFocus(); return
+        if not name:
+            self.update_status_bar("Enter group name.")
+            self.create_group_input.setFocus()
+            return
+        
         # Basic validation for group name (e.g., no weird characters) - TBD if needed
-        if NETWORKING_AVAILABLE and name in groups: self.update_status_bar(f"Group '{name}' already exists or you are already in it."); return
+        if NETWORKING_AVAILABLE and name in groups:
+            self.update_status_bar(f"Group '{name}' already exists or you are already in it.")
+            return
+            
         self.update_status_bar(f"Creating group '{name}'...")
-        if self.backend.trigger_create_group(name): self.create_group_input.clear()
-        else: self.update_status_bar(f"Failed to initiate group creation.")
-
+        if self.backend.trigger_create_group(name):
+            self.create_group_input.clear()
+        else:
+            self.update_status_bar(f"Failed to initiate group creation.")
 
     def accept_invite_action(self):
         # ... (keep existing accept_invite_action code) ...
@@ -1498,42 +1718,54 @@ class MainWindow(QMainWindow):
             else: self.update_status_bar("Invalid invite data."); logger.error(f"Invalid invite data in accept_invite_action: {data}")
         else: self.update_status_bar("No invite selected.")
 
-
     def decline_invite_action(self):
-        # ... (keep existing decline_invite_action code) ...
         item = self.pending_invites_list.currentItem()
         if item:
             data = item.data(Qt.ItemDataRole.UserRole); gn = data.get("groupname"); ip = data.get("inviter_ip");
             if gn and ip: self.update_status_bar(f"Declining invite for '{gn}'..."); self.backend.trigger_decline_invite(gn, ip)
-            else: self.update_status_bar("Invalid invite data."); logger.error(f"Invalid invite data in decline_invite_action: {data}")
+            else: self.update_status_bar("Invalid invite data."); logger.error(f"Invalid invite data in decline_invite_action: {data}")            
+            selected_item.setText(current_text)
         else: self.update_status_bar("No invite selected.")
 
     def approve_join_action(self):
-        # ... (keep existing approve_join_action code) ...
          item = self.join_requests_list.currentItem()
          if item:
              data = item.data(Qt.ItemDataRole.UserRole); gn = data.get("groupname"); ip = data.get("requester_ip"); un = data.get("requester_username", "Unknown");
              if gn and ip: self.update_status_bar(f"Approving {un} for group '{gn}'..."); self.backend.trigger_approve_join(gn, ip)
-             else: self.update_status_bar("Invalid join request data."); logger.error(f"Invalid join request data in approve_join_action: {data}")
+             else: self.update_status_bar("Invalid join request data."); logger.error(f"Invalid join request data in approve_join_action: {data}")        
          else: self.update_status_bar("No join request selected.")
 
     def deny_join_action(self):
-        # ... (keep existing deny_join_action code) ...
-         item = self.join_requests_list.currentItem()
-         if item:
-             data = item.data(Qt.ItemDataRole.UserRole); gn = data.get("groupname"); ip = data.get("requester_ip"); un = data.get("requester_username", "Unknown");
-             if gn and ip: self.update_status_bar(f"Denying {un} for group '{gn}'..."); self.backend.trigger_deny_join(gn, ip)
-             else: self.update_status_bar("Invalid join request data."); logger.error(f"Invalid join request data in deny_join_action: {data}")
-         else: self.update_status_bar("No join request selected.")
+        """Denies a pending join request for a group."""
+        item = self.join_requests_list.currentItem()
+        if item:
+            data = item.data(Qt.ItemDataRole.UserRole)
+            gn = data.get("groupname")
+            ip = data.get("requester_ip")
+            un = data.get("requester_username", "Unknown")
+            
+            if gn and ip:
+                self.update_status_bar(f"Denying {un} for group '{gn}'...")
+                self.backend.trigger_deny_join(gn, ip)
+            else:
+                self.update_status_bar("Invalid join request data.")
+                logger.error(f"Invalid join request data in deny_join_action: {data}")
+        else:
+            self.update_status_bar("No join request selected.")
 
     def show_about_dialog(self):
-        # ... (keep existing show_about_dialog code) ...
-        own = get_own_display_name() if NETWORKING_AVAILABLE else self.username; QMessageBox.about(self, "About P2P Chat", f"P2P Chat App v0.4\nUser: {own}\n\nPowered by PyQt6 & Asyncio") # Incremented version
+        """Shows the About dialog with app information."""
+        own = get_own_display_name() if NETWORKING_AVAILABLE else self.username
+        QMessageBox.about(
+            self, 
+            "About P2P Chat", 
+            f"P2P Chat App v0.4\nUser: {own}\n\nPowered by PyQt6 & Asyncio"
+        )
 
     def apply_styles(self):
         # --- Keep existing style definitions ---
         font_family="Segoe UI, Arial, sans-serif";dark_bg="#1e1e1e";medium_bg="#252526";light_bg="#2d2d2d";dark_border="#333333";medium_border="#444444";text_color="#e0e0e0";dim_text_color="#a0a0a0";accent_color="#ff6600";accent_hover="#e65c00";accent_pressed="#cc5200";secondary_btn_bg="#555555";secondary_btn_hover="#666666";secondary_btn_pressed="#444444"
-       
+
         # --- Updated chat-specific styles ---
         chat_history_bg = "#212529"  # Darker background for better contrast with white text
         chat_input_bg = "#343A40"    # Darker input area
@@ -1735,7 +1967,6 @@ class MainWindow(QMainWindow):
                 # Format display with role and member count
                 role_text = "👑 Admin" if is_admin else "👤 Member"
                 item_text = f"{group_name} ({role_text}, {member_count} members)"
-                
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.ItemDataRole.UserRole, group_name)
                 item.setToolTip(f"Group: {group_name}\nYour role: {'Admin' if is_admin else 'Member'}\nMembers: {member_count}")
@@ -1743,7 +1974,7 @@ class MainWindow(QMainWindow):
                 
                 if group_name == current_sel_name:
                     new_sel_item = item
-        
+
             if new_sel_item:
                 self.groups_list.setCurrentItem(new_sel_item)
             else:
@@ -1765,14 +1996,13 @@ class MainWindow(QMainWindow):
                 group_name = invite.get("groupname", "Unknown")
                 inviter_ip = invite.get("inviter_ip", "Unknown")
                 inviter_name = get_peer_display_name(inviter_ip) if NETWORKING_AVAILABLE else f"User_{inviter_ip}"
-                
                 item_text = f"Join '{group_name}' from {inviter_name}"
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.ItemDataRole.UserRole, invite)
                 item.setToolTip(f"Group: {group_name}\nInviter: {inviter_name}\nIP: {inviter_ip}")
                 self.pending_invites_list.addItem(item)
         
-        # Update button states - disabled if no selection
+        # Update button states - disabled if no selection        
         self.accept_invite_button.setEnabled(False)
         self.decline_invite_button.setEnabled(False)
 
@@ -1796,7 +2026,6 @@ class MainWindow(QMainWindow):
                 for req in requests:
                     requester_ip = req.get("requester_ip", "Unknown")
                     requester_name = req.get("requester_username", f"User_{requester_ip}")
-                    
                     item_text = f"{requester_name} wants to join"
                     item = QListWidgetItem(item_text)
                     # Store group name along with request data
@@ -1845,7 +2074,6 @@ class MainWindow(QMainWindow):
     def display_received_message(self, sender, content):
         """Displays a message received from a peer."""
         logger.info(f"Received message from {sender}: {content[:50]}...")
-        
         # Extract base username from sender's display name
         base_username = sender.split("(")[0] if "(" in sender else sender
         
@@ -1948,13 +2176,9 @@ if __name__ == "__main__":
     login_window.show()
 
     exit_code = app.exec()
-
-    logger.info(f"Application exiting with code {exit_code}")
-    shutdown_event.set() # Signal backend threads to stop
-
-    # Give threads a moment to react to the shutdown event
-    # This isn't strictly necessary if using QThread's quit/wait, but can help asyncio tasks
-    time.sleep(0.5)
-
     logger.info("Exiting script.")
+    time.sleep(0.5) # This isn't strictly necessary if using QThread's quit/wait, but can help asyncio tasks
+    # Give threads a moment to react to the shutdown event
+    shutdown_event.set() # Signal backend threads to stop
+    logger.info(f"Application exiting with code {exit_code}")
     sys.exit(exit_code)

@@ -1171,35 +1171,13 @@ async def receive_peer_messages(websocket, peer_ip):
                                 active_transfers.pop(tid, None)
                         # --- End Create and Register ---
 
-                    elif msg_type == "TRANSFER_PAUSE": # Handle pause request from sender
-                        tid = data.get("transfer_id")
-                        async with active_transfers_lock: transfer = active_transfers.get(tid) # Check global state
-                        # Check if the pause is for the current transfer on this connection
-                        if transfer and current_receiving_transfer and transfer.transfer_id == current_receiving_transfer.transfer_id:
-                            if transfer.state == TransferState.IN_PROGRESS:
-                                await transfer.pause() # Pause the local transfer object
-                                logger.info(f"Transfer {tid[:8]} paused by sender {display_name}.")
-                                await message_queue.put({"type":"log","message":f"{display_name} paused transfer {tid[:8]}"})
-                                await message_queue.put({"type":"transfer_update"}) # Update UI state
-                            else:
-                                logger.warning(f"Received PAUSE for transfer {tid[:8]} from {display_name}, but state is {transfer.state}.")
-                        else:
-                            logger.warning(f"Received PAUSE for unknown or irrelevant transfer {tid} from {display_name}.")
-
-                    elif msg_type == "TRANSFER_RESUME": # Handle resume request from sender
-                        tid = data.get("transfer_id")
-                        async with active_transfers_lock: transfer = active_transfers.get(tid) # Check global state
-                        # Check if the resume is for the current transfer on this connection
-                        if transfer and current_receiving_transfer and transfer.transfer_id == current_receiving_transfer.transfer_id:
-                             if transfer.state == TransferState.PAUSED:
-                                 await transfer.resume() # Resume the local transfer object
-                                 logger.info(f"Transfer {tid[:8]} resumed by sender {display_name}.")
-                                 await message_queue.put({"type":"log","message":f"{display_name} resumed transfer {tid[:8]}"})
-                                 await message_queue.put({"type":"transfer_update"}) # Update UI state
-                             else:
-                                 logger.warning(f"Received RESUME for transfer {tid[:8]} from {display_name}, but state is {transfer.state}.")
-                        else:
-                             logger.warning(f"Received RESUME for unknown or irrelevant transfer {tid} from {display_name}.")
+                    elif msg_type == "TRANSFER_PAUSE":
+                        from networking.file_transfer import handle_transfer_control_message
+                        await handle_transfer_control_message(data, peer_ip)
+                    
+                    elif msg_type == "TRANSFER_RESUME":
+                        from networking.file_transfer import handle_transfer_control_message
+                        await handle_transfer_control_message(data, peer_ip)
 
                     # --- Group Messaging Handling ---
                     # (Ensure locks are used appropriately around shared group state)

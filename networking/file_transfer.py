@@ -36,29 +36,111 @@ class FileTransfer:
         except OSError as e: logger.error(f"Error getting size for {file_path}: {e}"); self.state = TransferState.FAILED
 
     async def pause(self):
+        """Pauses a transfer and notifies the peer if we're the sender."""
+        paused_successfully = False
+        
         async with self.condition:
             if self.state == TransferState.IN_PROGRESS:
                 self.state = TransferState.PAUSED
+                paused_successfully = True
                 logger.info(f"Transfer {self.transfer_id[:8]} paused.")
+                
+                # Notify UI about state change within the lock
                 await message_queue.put({"type": "transfer_update"})
+                
+                # Send pause notification to peer if we're the sender
+                if self.direction == "send":
+                    try:
+                        from networking.shared_state import connections
+                        ws = connections.get(self.peer_ip)
+                        if ws and ws.state == State.OPEN:
+                            pause_msg = json.dumps({
+                                "type": "TRANSFER_PAUSE",
+                                "transfer_id": self.transfer_id
+                            })
+                            await ws.send(pause_msg)
+                            logger.info(f"Sent pause notification to peer for transfer {self.transfer_id[:8]}")
+                        else:
+                            logger.warning(f"Could not notify peer about pause: connection unavailable for {self.peer_ip}")
+                    except Exception as e:
+                        logger.error(f"Error sending pause notification to peer: {e}")
+                        # Continue with local pause even if notification fails
+            else:
+                logger.warning(f"Cannot pause transfer {self.transfer_id[:8]}: not in progress (current state: {self.state.value})")
+        
+        # Outside the lock, send progress update if we successfully paused
+        if paused_successfully:
+            await message_queue.put({
+                "type": "transfer_progress",
+                "transfer_id": self.transfer_id,
+                "progress": int((self.transferred_size / self.total_size) * 100) if self.total_size > 0 else 0,
+                "state": "paused"  # Add state information
+            })
+        
+        return paused_successfully
 
     async def resume(self):
+        """Resumes a paused transfer and notifies the peer if we're the sender."""
+        resumed_successfully = False
+        
         async with self.condition:
             if self.state == TransferState.PAUSED:
                 self.state = TransferState.IN_PROGRESS
+                resumed_successfully = True
                 logger.info(f"Transfer {self.transfer_id[:8]} resumed.")
-                self.condition.notify_all()
+                
+                # Notify UI about state change within the lock
                 await message_queue.put({"type": "transfer_update"})
+                
+                # Send resume notification to peer if we're the sender
+                if self.direction == "send":
+                    try:
+                        from networking.shared_state import connections
+                        ws = connections.get(self.peer_ip)
+                        if ws and ws.state == State.OPEN:
+                            resume_msg = json.dumps({
+                                "type": "TRANSFER_RESUME",
+                                "transfer_id": self.transfer_id
+                            })
+                            await ws.send(resume_msg)
+                            logger.info(f"Sent resume notification to peer for transfer {self.transfer_id[:8]}")
+                        else:
+                            logger.warning(f"Could not notify peer: connection unavailable for {self.peer_ip}")
+                    except Exception as e:
+                        logger.error(f"Error sending resume notification to peer: {e}")
+                        # Continue with local resume even if notification fails
+                
+                # Notify all waiters
+                self.condition.notify_all()
+            else:
+                logger.warning(f"Cannot resume transfer {self.transfer_id[:8]}: not paused (current state: {self.state.value})")
+        
+        # Outside the lock, send progress update if we successfully resumed
+        if resumed_successfully:
+            await message_queue.put({
+                "type": "transfer_progress",
+                "transfer_id": self.transfer_id,
+                "progress": int((self.transferred_size / self.total_size) * 100) if self.total_size > 0 else 0,
+                "state": "in_progress"  # Add state information
+            })
+        
+        return resumed_successfully
 
     async def fail(self, reason="Unknown"):
+        """Marks a transfer as failed and performs cleanup."""
         async with self.condition:
-             if self.state not in [TransferState.COMPLETED, TransferState.FAILED]:
+            if self.state not in [TransferState.COMPLETED, TransferState.FAILED]:
                 logger.error(f"Transfer {self.transfer_id[:8]} failed: {reason}")
                 self.state = TransferState.FAILED
+                
+                # Close file handle if open
                 if self.file_handle:
                     safe_close_file(self.file_handle)
                     self.file_handle = None
+                
+                # Notify UI about state change
                 await message_queue.put({"type": "transfer_update"})
+        return True
 
 async def compute_hash(file_path):
     """Compute the SHA-256 hash of a file asynchronously."""
@@ -68,7 +150,7 @@ async def compute_hash(file_path):
             while True:
                 chunk = await f.read(1024 * 1024) # Read in 1MB chunks
                 if not chunk:
-                    break 
+                    break
                 hash_algo.update(chunk) # Update hash ONLY if chunk has data
         return hash_algo.hexdigest()
     except FileNotFoundError: logger.error(f"File not found during hash computation: {file_path}"); return None
@@ -109,7 +191,6 @@ async def send_file(file_path, peers):
     file_name = os.path.basename(file_path)
     file_size = os.path.getsize(file_path)
     file_hash = await compute_hash(file_path)
-
     if file_hash is None:
         await message_queue.put({"type": "log", "message": f"Send Error: Could not compute hash for '{file_name}'.", "level": logging.ERROR})
         return
@@ -143,52 +224,93 @@ async def send_file(file_path, peers):
         await message_queue.put({"type": "transfer_update"})
         await message_queue.put({"type": "log", "message": f"Send Error: Failed to initiate transfer with {peer_ip}.", "level": logging.ERROR})
         return
-
+    await message_queue.put({"type": "transfer_update"})
     try:
         async with aiofiles.open(file_path, "rb") as f:
             transfer.file_handle = f
             chunk_size = 1024 * 1024
             while not shutdown_event.is_set() and transfer.state != TransferState.FAILED:
-                async with transfer.condition:
-                    while transfer.state == TransferState.PAUSED and not shutdown_event.is_set():
-                        await transfer.condition.wait()
-                    if shutdown_event.is_set() or transfer.state == TransferState.FAILED: break
-                    if transfer.state != TransferState.IN_PROGRESS: break
-
-                chunk = await f.read(chunk_size)
-                if not chunk:
-                    await asyncio.sleep(0.1) # Allow last chunk send to process
-                    transfer.state = TransferState.COMPLETED
-                    break
-
-                transfer.transferred_size += len(chunk)
-
-                # --- Send chunk as binary --- #
                 try:
-                    # Check connection state *before* sending
+                    # Handle pause state efficiently
+                    if transfer.state == TransferState.PAUSED:
+                        logger.info(f"Transfer {transfer_id[:8]} is paused, waiting to resume...")
+                        
+                        # Use a series of short waits instead of one long wait
+                        # This allows for more responsive resuming
+                        pause_wait_count = 0
+                        while transfer.state == TransferState.PAUSED and not shutdown_event.is_set():
+                            try:
+                                async with transfer.condition:
+                                    # Wait with a shorter timeout to prevent deadlocks
+                                    await asyncio.wait_for(transfer.condition.wait(), timeout=5.0)
+                            except asyncio.TimeoutError:
+                                # If waiting times out, simply check state again
+                                pause_wait_count += 1
+                                if pause_wait_count % 12 == 0:  # Log only every minute (12 x 5 seconds)
+                                    logger.debug(f"Still waiting for resume on transfer {transfer_id[:8]}")
+                        
+                        # After pause loop, check if we should continue
+                        if shutdown_event.is_set() or transfer.state == TransferState.FAILED:
+                            logger.info(f"Transfer {transfer_id[:8]} not continuing after pause: shutdown={shutdown_event.is_set()}, state={transfer.state}")
+                            break
+                        if transfer.state == TransferState.IN_PROGRESS:
+                            logger.info(f"Transfer {transfer_id[:8]} resumed, continuing...")
+                        else:
+                            logger.warning(f"Transfer {transfer_id[:8]} in unexpected state after pause: {transfer.state}")
+                            await asyncio.sleep(1.0)
+                            continue
+
+                    # Read chunk outside the lock
+                    chunk = await f.read(chunk_size)
+                    if not chunk:
+                        # End of file reached
+                        async with transfer.condition:
+                            transfer.state = TransferState.COMPLETED
+                        await asyncio.sleep(0.1)  # Allow last chunk send to process
+                        break
+
+                    # Update transfer size under lock
+                    async with transfer.condition:
+                        # Verify state hasn't changed during file read
+                        if transfer.state != TransferState.IN_PROGRESS:
+                            logger.debug(f"Transfer {transfer_id[:8]} state changed during read to {transfer.state}")
+                            continue
+                            
+                        transfer.transferred_size += len(chunk)
+                        transfer.hash_algo.update(chunk)  # Update hash if being calculated
+
+                    # Check connection state before sending
                     if websocket.state != State.OPEN:
-                         logger.warning(f"Peer {peer_ip} disconnected during send.")
-                         await transfer.fail("Peer disconnected during send")
-                         break # Exit send loop
+                        logger.warning(f"Peer {peer_ip} disconnected during send.")
+                        await transfer.fail("Peer disconnected during send")
+                        break
 
-                    # --- *** CORRECTED: Send raw bytes directly *** ---
-                    await websocket.send(chunk)
-                    # --- *** /CORRECTED *** ---
+                    # Send with timeout and error handling
+                    try:
+                        await asyncio.wait_for(websocket.send(chunk), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        logger.error(f"Timeout sending chunk to {peer_ip}")
+                        await transfer.fail("Send timeout")
+                        break
+                    except websockets.exceptions.ConnectionClosed as e:
+                        logger.warning(f"Connection closed during send: {e}")
+                        await transfer.fail("Connection closed during send")
+                        break
+                    except Exception as e:
+                        logger.error(f"Error sending chunk: {e}", exc_info=True)
+                        await transfer.fail(f"Send error: {e}")
+                        break
 
-                # --- CORRECTED Exception Handling for send ---
-                except websockets.exceptions.ConnectionClosedOK:
-                    logger.warning(f"Peer {peer_ip} closed connection (OK) during send.")
-                    await transfer.fail("Peer closed connection")
-                    break # Exit send loop
-                except websockets.exceptions.ConnectionClosedError as e:
-                     logger.warning(f"Peer {peer_ip} closed connection abruptly during send: {e}")
-                     await transfer.fail("Peer connection lost abruptly")
-                     break # Exit send loop
-                except Exception as e: # Catch other potential send errors
-                    logger.error(f"Error sending chunk to {peer_ip}: {e}", exc_info=True) # Log traceback
-                    await transfer.fail(f"Send error: {e}")
-                    break # Exit send loop
-                # --- End Corrected Exception Handling ---
+                    # Throttle sending if needed (can be adjusted based on network conditions)
+                    await asyncio.sleep(0.001)
+                except asyncio.CancelledError:
+                    logger.info(f"Transfer {transfer_id[:8]} cancelled during send")
+                    await transfer.fail("Transfer cancelled")
+                    break
+                except Exception as e:
+                    logger.exception(f"Unexpected error in transfer loop for {transfer_id[:8]}")
+                    await transfer.fail(f"Unexpected error: {e}")
+                    break
 
             # --- Loop finished ---
             if transfer.state == TransferState.COMPLETED:
@@ -198,7 +320,6 @@ async def send_file(file_path, peers):
                  await message_queue.put({"type": "log", "message": f"Send '{file_name}' cancelled by shutdown."})
                  await transfer.fail("Shutdown initiated")
             # Failure case handled within loop by calling transfer.fail()
-
     except Exception as e:
         logger.exception(f"Error during file send for {transfer_id[:8]}")
         await transfer.fail(f"Send error: {e}")
@@ -208,12 +329,10 @@ async def send_file(file_path, peers):
             transfer.file_handle = None
         # Ensure final state update is sent to GUI
         await message_queue.put({"type": "transfer_update"})
-        
         # Remove from outgoing transfers tracking
         async with active_transfers_lock:
             if peer_ip in outgoing_transfers_by_peer and outgoing_transfers_by_peer[peer_ip] == transfer_id:
                 outgoing_transfers_by_peer.pop(peer_ip, None)
-
 
 async def update_transfer_progress():
     """Periodically send transfer progress updates to the GUI queue."""
@@ -221,7 +340,7 @@ async def update_transfer_progress():
         try:
             transfers_to_remove = []
             updated = False
-            
+
             # Use lock when accessing active_transfers
             async with active_transfers_lock:
                 # Use items() for safe iteration if active_transfers might change during iteration
@@ -258,7 +377,7 @@ async def update_transfer_progress():
                     await message_queue.put({"type": "transfer_update"})
 
             await asyncio.sleep(1)
-        except asyncio.CancelledError: 
+        except asyncio.CancelledError:
             logger.info("update_transfer_progress task cancelled.")
             break
         except Exception as e: 
@@ -266,3 +385,60 @@ async def update_transfer_progress():
             await asyncio.sleep(5)
             
     logger.info("update_transfer_progress stopped.")
+
+# Add this function to process pause/resume messages from peers
+async def handle_transfer_control_message(message_data, peer_ip):
+    """Process transfer control messages like pause and resume."""
+    try:
+        msg_type = message_data.get("type")
+        transfer_id = message_data.get("transfer_id")
+        
+        if not transfer_id:
+            logger.warning(f"Received {msg_type} without transfer_id from {peer_ip}")
+            return
+            
+        # Thread-safe check if transfer exists
+        async with active_transfers_lock:
+            if transfer_id not in active_transfers:
+                logger.warning(f"Received {msg_type} for unknown transfer ID {transfer_id}")
+                return
+                
+            transfer = active_transfers[transfer_id]
+        
+        # Verify this message is from the peer involved in the transfer
+        if transfer.peer_ip != peer_ip:
+            logger.warning(f"Received {msg_type} from {peer_ip} but transfer {transfer_id[:8]} involves {transfer.peer_ip}")
+            return
+            
+        if msg_type == "TRANSFER_PAUSE":
+            logger.info(f"Received pause request for transfer {transfer_id[:8]}")
+            success = await transfer.pause()
+            
+            if success:
+                # Notify UI about remote pause action
+                display_name = get_peer_display_name(peer_ip) if 'get_peer_display_name' in globals() else peer_ip
+                await message_queue.put({
+                    "type": "log", 
+                    "message": f"Transfer {transfer_id[:8]} paused by {display_name}",
+                    "level": logging.INFO
+                })
+            else:
+                logger.warning(f"Could not pause transfer {transfer_id[:8]} as requested by peer (current state: {transfer.state.value})")
+            
+        elif msg_type == "TRANSFER_RESUME":
+            logger.info(f"Received resume request for transfer {transfer_id[:8]}")
+            success = await transfer.resume()
+            
+            if success:
+                # Notify UI about remote resume action
+                display_name = get_peer_display_name(peer_ip) if 'get_peer_display_name' in globals() else peer_ip
+                await message_queue.put({
+                    "type": "log", 
+                    "message": f"Transfer {transfer_id[:8]} resumed by {display_name}",
+                    "level": logging.INFO
+                })
+            else:
+                logger.warning(f"Could not resume transfer {transfer_id[:8]} as requested by peer (current state: {transfer.state.value})")
+            
+    except Exception as e:
+        logger.error(f"Error handling transfer control message: {e}", exc_info=True)

@@ -3,6 +3,8 @@ from pathlib import Path
 from typing import Tuple, Optional
 import logging
 import sys
+import shutil
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -31,29 +33,24 @@ def check_file_size(file_path: str, max_size_mb: int = 2000, file_size_bytes: in
     Returns:
         (is_valid, message): Tuple containing validity status and descriptive message
     """
-    max_size_bytes = max_size_mb * 1024 * 1024
+    if file_size_bytes is None and file_path:
+        try:
+            file_size_bytes = os.path.getsize(file_path)
+        except OSError as e:
+            return False, f"Error reading file: {e}"
     
-    # If file size is provided directly, use it
-    if file_size_bytes is not None:
-        if file_size_bytes > max_size_bytes:
-            size_mb = file_size_bytes / (1024 * 1024)
-            return False, f"File size ({size_mb:.2f} MB) exceeds maximum allowed size of {max_size_mb} MB"
-        return True, f"File size ({file_size_bytes / (1024 * 1024):.2f} MB) is valid"
-    
-    # Otherwise check the file on disk
-    if file_path is None:
-        return False, "No file path or size provided for validation"
+    if file_size_bytes is None:
+        return False, "Cannot determine file size"
         
-    try:
-        size = os.path.getsize(file_path)
-        if size > max_size_bytes:
-            size_mb = size / (1024 * 1024)
-            return False, f"File size ({size_mb:.2f} MB) exceeds maximum allowed size of {max_size_mb} MB"
-        return True, f"File size ({size / (1024 * 1024):.2f} MB) is valid"
-    except FileNotFoundError:
-        return False, f"File not found: {file_path}"
-    except Exception as e:
-        return False, f"Error checking file size: {str(e)}"
+    file_size_mb = file_size_bytes / (1024 * 1024)
+    
+    if file_size_mb > max_size_mb:
+        return False, f"File size ({file_size_mb:.2f} MB) exceeds maximum allowed size ({max_size_mb} MB)"
+    
+    if file_size_bytes == 0:
+        return False, "File is empty"
+        
+    return True, f"File size ({file_size_mb:.2f} MB) is acceptable"
 
 def check_disk_space(destination_dir: str, required_mb: float) -> Tuple[bool, str]:
     """
@@ -85,6 +82,33 @@ def check_disk_space(destination_dir: str, required_mb: float) -> Tuple[bool, st
     except Exception as e:
         return False, f"Error checking disk space: {str(e)}"
 
+def check_disk_space(target_dir, required_mb, buffer_factor=1.1):
+    """
+    Checks if there's enough disk space for the file.
+    Returns (has_space, message)
+    
+    Args:
+        target_dir: Directory where file will be saved
+        required_mb: Required space in MB
+        buffer_factor: Additional space buffer (e.g., 1.1 = 10% extra)
+    """
+    try:
+        # Get free space in bytes
+        free_bytes = shutil.disk_usage(target_dir).free
+        free_mb = free_bytes / (1024 * 1024)
+        
+        # Calculate required space with buffer
+        required_with_buffer = required_mb * buffer_factor
+        
+        if free_mb < required_with_buffer:
+            return False, f"Insufficient disk space. Need {required_with_buffer:.2f} MB, but only {free_mb:.2f} MB available."
+        
+        return True, f"Sufficient disk space available ({free_mb:.2f} MB)"
+    except Exception as e:
+        logger.error(f"Error checking disk space: {e}")
+        # Default to allowing the transfer if we can't check
+        return True, f"Could not verify disk space: {e}"
+
 def safe_close_file(file_handle: Optional[object]) -> None:
     """
     Safely close a file handle, catching and logging any exceptions.
@@ -101,3 +125,23 @@ def safe_close_file(file_handle: Optional[object]) -> None:
         logger.debug(f"Successfully closed file handle: {file_handle}")
     except Exception as e:
         logger.warning(f"Error closing file handle: {e}", exc_info=True)
+
+def safe_close_file(file_handle):
+    """Safely close a file handle, handling both sync and async file objects."""
+    if file_handle is None:
+        return
+        
+    try:
+        # For aiofiles file handle
+        if hasattr(file_handle, 'close') and asyncio.iscoroutinefunction(file_handle.close):
+            # We can't await here, so we need to close synchronously
+            # Use the internal file object if available
+            if hasattr(file_handle, '_file') and hasattr(file_handle._file, 'close'):
+                file_handle._file.close()
+            else:
+                logger.warning("Could not access _file to close async file handle synchronously")
+        # For regular file handle
+        elif hasattr(file_handle, 'close'):
+            file_handle.close()
+    except Exception as e:
+        logger.error(f"Error closing file handle: {e}")
