@@ -1,5 +1,9 @@
+/dist/
+/build/
+*.spec
+
 venv/
 .venv/
 **/__pycache__/
-user_config_*.json  # Updated to ignore device-specific config files
+user_config_*.json
 downloads/
