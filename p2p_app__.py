@@ -1414,10 +1414,9 @@ class MainWindow(QMainWindow):
 
         peers_dict = {ip: ws}
         fname = os.path.basename(self.selected_file)
-        self.update_status_bar(f"Initiating send '{fname}' to {uname}...").UserRole
+        self.update_status_bar(f"Initiating send '{fname}' to {uname}...")
         # Switch to transfers tab after initiating
         self.tab_widget.setCurrentWidget(self.transfers_tab)            
-        self.update_status_bar("Cannot pause: Transfer not found or network unavailable.")
         self.backend.trigger_send_file(self.selected_file, peers_dict)
 
     def pause_transfer(self):
@@ -1447,15 +1446,22 @@ class MainWindow(QMainWindow):
         self.pause_button.setEnabled(False)
         self.resume_button.setEnabled(False)
         
-        # Update item text to show pausing in progress
+        # Store filename for status messages (don't keep a reference to the UI item)
+        file_name = os.path.basename(transfer_obj.file_path)
+        
+        # Update item text to show pausing in progress - safely
         current_text = selected_item.text()
         # Remove any existing status text before adding new one
         original_text = current_text
         for status in [" - PAUSED", " - PAUSING...", " - RESUMING..."]:
             original_text = original_text.replace(status, "")
-        selected_item.setText(f"{original_text} - PAUSING...")
+            
+        try:
+            selected_item.setText(f"{original_text} - PAUSING...")
+        except RuntimeError:
+            logger.warning("Selected item was deleted before we could update its text")
 
-        self.update_status_bar(f"Pausing transfer {os.path.basename(transfer_obj.file_path)}...")
+        self.update_status_bar(f"Pausing transfer {file_name}...")
         
         async def execute_pause():
             try:
@@ -1468,37 +1474,58 @@ class MainWindow(QMainWindow):
             if result:
                 self.update_status_bar("Transfer paused successfully.")
                 logger.info(f"UI: Transfer {transfer_id[:8]} pause completed")
-                self.backend.emit_transfers_update() # Refresh list sooner
+                
+                # Refresh the transfer list
+                self.backend.emit_transfers_update()
                 
                 # Update current progress display with pause state
                 current_progress = self.transfer_progress_cache.get(transfer_id, 0)
                 self.update_transfer_progress_display(transfer_id, current_progress)
                 
-                # Update button states - enable resume button
-                self.pause_button.setEnabled(False)
-                self.resume_button.setEnabled(True)
+                # Find the current item for this transfer ID if it still exists
+                current_item = None
+                for i in range(self.transfer_list.count()):
+                    item = self.transfer_list.item(i)
+                    if item and item.data(Qt.ItemDataRole.UserRole) == transfer_id:
+                        current_item = item
+                        break
                 
-                # Update item text to show PAUSED
-                selected_item.setText(f"{original_text} - PAUSED")
+                # If we found the item, update it
+                if current_item:
+                    # Get the current text and update it
+                    current_text = current_item.text()
+                    base_text = current_text
+                    for status in [" - PAUSED", " - PAUSING...", " - RESUMING..."]:
+                        base_text = base_text.replace(status, "")
+                    
+                    try:
+                        current_item.setText(f"{base_text} - PAUSED")
+                    except RuntimeError:
+                        logger.warning(f"Item for transfer {transfer_id[:8]} was deleted before we could update its text")
+                
+                # Select the current item if it exists
+                if current_item:
+                    try:
+                        self.transfer_list.setCurrentItem(current_item)
+                    except RuntimeError:
+                        pass
+                
+                # Update button states based on current selection
+                self.on_transfer_selection_changed(self.transfer_list.currentItem(), None)
+                
             else:
                 self.update_status_bar("Failed to pause transfer. May be in wrong state or completed.")
                 logger.warning(f"UI: Transfer {transfer_id[:8]} pause failed or rejected")
                 
-                # Restore original text
-                selected_item.setText(original_text)
-                
-                # Update button states based on current transfer state
-                self.on_transfer_selection_changed(selected_item, None)
+                # Update button states based on current selection
+                self.on_transfer_selection_changed(self.transfer_list.currentItem(), None)
                 
         def on_error(err):
             self.update_status_bar(f"Failed to pause: {err[1]}")
             logger.error(f"UI: Transfer {transfer_id[:8]} pause failed: {err}")
             
-            # Restore original text
-            selected_item.setText(original_text)
-            
-            # Update button states based on current transfer state
-            self.on_transfer_selection_changed(selected_item, None)
+            # Update button states based on current selection
+            self.on_transfer_selection_changed(self.transfer_list.currentItem(), None)
         
         worker = Worker(execute_pause, loop=self.backend.loop)
         worker.signals.result.connect(on_finished)
@@ -1532,15 +1559,22 @@ class MainWindow(QMainWindow):
         self.pause_button.setEnabled(False)
         self.resume_button.setEnabled(False)
         
-        # Update item text to show resuming in progress
+        # Store filename for status messages (don't keep a reference to the UI item)
+        file_name = os.path.basename(transfer_obj.file_path)
+        
+        # Update item text to show resuming in progress - safely
         current_text = selected_item.text()
         # Remove any existing status text before adding new one
         original_text = current_text
         for status in [" - PAUSED", " - PAUSING...", " - RESUMING..."]:
             original_text = original_text.replace(status, "")
-        selected_item.setText(f"{original_text} - RESUMING...")
+            
+        try:
+            selected_item.setText(f"{original_text} - RESUMING...")
+        except RuntimeError:
+            logger.warning("Selected item was deleted before we could update its text")
 
-        self.update_status_bar(f"Resuming transfer {os.path.basename(transfer_obj.file_path)}...")
+        self.update_status_bar(f"Resuming transfer {file_name}...")
         
         async def execute_resume():
             try:
@@ -1553,40 +1587,59 @@ class MainWindow(QMainWindow):
             if result:
                 self.update_status_bar("Transfer resumed successfully.")
                 logger.info(f"UI: Transfer {transfer_id[:8]} resume completed")
-                self.backend.emit_transfers_update() # Refresh list sooner
+                
+                # Refresh the transfer list
+                self.backend.emit_transfers_update()
                 
                 # Update current progress display with resume state
                 current_progress = self.transfer_progress_cache.get(transfer_id, 0)
                 self.update_transfer_progress_display(transfer_id, current_progress)
                 
-                # Update button states - enable pause button
-                self.pause_button.setEnabled(True)
-                self.resume_button.setEnabled(False)
+                # Find the current item for this transfer ID if it still exists
+                current_item = None
+                for i in range(self.transfer_list.count()):
+                    item = self.transfer_list.item(i)
+                    if item and item.data(Qt.ItemDataRole.UserRole) == transfer_id:
+                        current_item = item
+                        break
                 
-                # Update item text to remove PAUSED
-                selected_item.setText(original_text)
+                # If we found the item, update it
+                if current_item:
+                    # Get the current text and update it
+                    current_text = current_item.text()
+                    base_text = current_text
+                    for status in [" - PAUSED", " - PAUSING...", " - RESUMING..."]:
+                        base_text = base_text.replace(status, "")
+                    
+                    try:
+                        # For resume, we remove the PAUSED status
+                        current_item.setText(base_text)
+                    except RuntimeError:
+                        logger.warning(f"Item for transfer {transfer_id[:8]} was deleted before we could update its text")
+                
+                # Select the current item if it exists
+                if current_item:
+                    try:
+                        self.transfer_list.setCurrentItem(current_item)
+                    except RuntimeError:
+                        pass
+                
+                # Update button states based on current selection
+                self.on_transfer_selection_changed(self.transfer_list.currentItem(), None)
+                
             else:
                 self.update_status_bar("Failed to resume transfer. May be in wrong state or completed.")
                 logger.warning(f"UI: Transfer {transfer_id[:8]} resume failed or rejected")
                 
-                # Restore original text with PAUSED if appropriate
-                if transfer_obj.state == TransferState.PAUSED:
-                    selected_item.setText(f"{original_text} - PAUSED")
-                else:
-                    selected_item.setText(original_text)
-                
-                # Update button states based on current transfer state
-                self.on_transfer_selection_changed(selected_item, None)
+                # Update button states based on current selection
+                self.on_transfer_selection_changed(self.transfer_list.currentItem(), None)
                 
         def on_error(err):
             self.update_status_bar(f"Failed to resume: {err[1]}")
             logger.error(f"UI: Transfer {transfer_id[:8]} resume failed: {err}")
             
-            # Restore original text with PAUSED state
-            selected_item.setText(f"{original_text} - PAUSED")
-            
-            # Update button states based on current transfer state
-            self.on_transfer_selection_changed(selected_item, None)
+            # Update button states based on current selection
+            self.on_transfer_selection_changed(self.transfer_list.currentItem(), None)
         
         worker = Worker(execute_resume, loop=self.backend.loop)
         worker.signals.result.connect(on_finished)
@@ -1685,11 +1738,11 @@ class MainWindow(QMainWindow):
 
     def on_invite_selected(self, current, previous):
         # ... (keep existing on_invite_selected code) ...
-        self.accept_invite_button.setEnabled(current is not None); self.decline_invite_button.setEnabled(current is not None)
+        self.accept_invite_button.setEnabled(current is not None)
+        self.decline_invite_button.setEnabled(current is not None)
     def on_join_request_selected(self, current, previous):
-        # ... (keep existing on_join_request_selected code) ...
-        self.approve_join_button.setEnabled(current is not None); self.deny_join_button.setEnabled(current is not None)        # Disable both buttons immediately to prevent multiple clicks
-        self.pause_button.setEnabled(False)
+        self.approve_join_button.setEnabled(current is not None)
+        self.deny_join_button.setEnabled(current is not None)       
     def create_group_action(self):
         """Creates a new group with the current user as admin."""
         name = self.create_group_input.text().strip()
@@ -1723,8 +1776,7 @@ class MainWindow(QMainWindow):
         if item:
             data = item.data(Qt.ItemDataRole.UserRole); gn = data.get("groupname"); ip = data.get("inviter_ip");
             if gn and ip: self.update_status_bar(f"Declining invite for '{gn}'..."); self.backend.trigger_decline_invite(gn, ip)
-            else: self.update_status_bar("Invalid invite data."); logger.error(f"Invalid invite data in decline_invite_action: {data}")            
-            selected_item.setText(current_text)
+            else: self.update_status_bar("Invalid invite data."); logger.error(f"Invalid invite data in decline_invite_action: {data}")
         else: self.update_status_bar("No invite selected.")
 
     def approve_join_action(self):
