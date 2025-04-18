@@ -1,15 +1,14 @@
-# networking/shared_state.py
 import asyncio
 from collections import defaultdict
 
 shutdown_event = asyncio.Event()
 active_transfers = {}
 message_queue = asyncio.Queue()
-connections = {}  # {peer_ip: websocket}
+connections = {} 
 user_data = {}
-peer_public_keys = {}  # {peer_ip: public_key}
-peer_usernames = {}  # {username: peer_ip} <--- Maps unique username to IP
-peer_device_ids = {} # {peer_ip: device_id} <--- ADDED THIS LINE
+peer_public_keys = {}  
+peer_usernames = {}  
+peer_device_ids = {} 
 
 # --- Group State ---
 groups = defaultdict(lambda: {"admin": None, "members": set()}) # {groupname: {"admin": admin_ip, "members": {ip1, ip2}}}

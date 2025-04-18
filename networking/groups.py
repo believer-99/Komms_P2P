@@ -1,4 +1,3 @@
-# networking/groups.py
 import json
 import logging
 from websockets.connection import State

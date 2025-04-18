@@ -1,4 +1,3 @@
-# networking/messaging.py
 import asyncio
 import logging
 import websockets
@@ -7,7 +6,6 @@ import platform
 import json
 import hashlib
 import aiofiles
-import netifaces
 import uuid
 import time
 import ssl # <-- Added ssl import

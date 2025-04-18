@@ -6,7 +6,6 @@ import sys
 import uuid
 from enum import Enum
 import hashlib
-import netifaces
 import traceback
 import time
 import ssl
@@ -60,7 +59,7 @@ try:
         handle_incoming_connection, receive_peer_messages, send_message_to_peers,
         maintain_peer_list, initialize_user_config,
         connect_to_peer, disconnect_from_peer,
-        CERT_FILE, KEY_FILE # <-- Import cert/key paths if needed directly
+        CERT_FILE, KEY_FILE
     )
 
     from networking.shared_state import connections
@@ -972,7 +971,7 @@ class MainWindow(QMainWindow):
             item.setForeground(QColor("#aaaaaa"))
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self.network_peer_list.addItem(item)
-            item = QListWidgetItem("pip install psutil cryptography websockets netifaces") # Added all likely missing ones
+            item = QListWidgetItem("pip install psutil cryptography websockets") # Added all likely missing ones
             item.setForeground(QColor("#00aaff"))  # Blue color
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self.network_peer_list.addItem(item)
@@ -1223,53 +1222,110 @@ class MainWindow(QMainWindow):
                 current_item.setText(item_text)
 
     def on_transfer_selection_changed(self, current, previous):
-        can_pause = False; can_resume = False; progress = 0
-        
-        # Reset speed and time displays when selection changes
+        """Updates transfer details and enables/disables buttons based on selection and direction."""
+        # --- Default State: Buttons Disabled ---
+        can_pause = False
+        can_resume = False
+        progress = 0
+        transfer_obj = None # Initialize transfer_obj
+
+        # --- Reset UI elements that depend on selection ---
         self.speed_value.setText("-- MB/s")
         self.time_value.setText("--:--:--")
-        
+        self.progress_bar.setValue(0) # Reset progress bar too
+
+        # --- Process if an item is selected ---
         if current:
             transfer_id = current.data(Qt.ItemDataRole.UserRole)
-            state_value = "Unknown"; transfer_obj = None
-            
-            # Check active_transfers safely
-            if NETWORKING_AVAILABLE and transfer_id in active_transfers:
-                transfer_obj = active_transfers.get(transfer_id) # Use get for safety
-            # Add dummy check if needed
-            # elif not NETWORKING_AVAILABLE and transfer_id in active_transfers: transfer_obj = active_transfers[transfer_id]
-
-            if transfer_obj:
-                state_value = getattr(getattr(transfer_obj, 'state', None), 'value', 'Unknown')
-                # Use the actual Enum for comparison if networking is available
+            if transfer_id:
+                logger.debug(f"Transfer selection changed to ID: {transfer_id[:8]}")
+                # Safely get the transfer object from the shared state
                 if NETWORKING_AVAILABLE:
-                    can_pause = transfer_obj.state == TransferState.IN_PROGRESS
-                    can_resume = transfer_obj.state == TransferState.PAUSED
-                else: # Fallback to string comparison for dummy mode if needed
-                    can_pause = state_value == "Sending" # Example dummy state
-                    can_resume = state_value == "Paused"  # Example dummy state
+                    transfer_obj = active_transfers.get(transfer_id)
 
-            progress = self.transfer_progress_cache.get(transfer_id, 0) # Get progress from cache
-            
-            # Update speed and time remaining displays for the selected transfer
-            if transfer_id in self.transfer_speed_cache:
-                speed_mbps = self.transfer_speed_cache.get(transfer_id, 0.0)
-                self.speed_value.setText(f"{speed_mbps:.2f} MB/s")
-                
-                # Calculate and display ETA
-                if transfer_obj and speed_mbps > 0:
-                    bytes_remaining = transfer_obj.total_size - transfer_obj.transferred_size
-                    eta_seconds = bytes_remaining / (speed_mbps * 1024 * 1024)
-                    
-                    eta_hours = int(eta_seconds // 3600)
-                    eta_minutes = int((eta_seconds % 3600) // 60)
-                    eta_seconds = int(eta_seconds % 60)
-                    self.time_value.setText(f"{eta_hours:02d}:{eta_minutes:02d}:{eta_seconds:02d}")
+                if transfer_obj:
+                    # Get necessary attributes safely
+                    state = getattr(transfer_obj, 'state', None)
+                    direction = getattr(transfer_obj, 'direction', 'unknown')
+                    total_size = getattr(transfer_obj, 'total_size', 0)
+                    transferred_size = getattr(transfer_obj, 'transferred_size', 0)
+
+                    logger.debug(f"Transfer {transfer_id[:8]} - Direction: {direction}, State: {state}")
+
+                    # --- CORE LOGIC: Enable buttons ONLY for outgoing transfers ---
+                    if direction == "send":
+                        logger.debug(f"Transfer {transfer_id[:8]} is OUTGOING. Checking state for buttons...")
+                        # Only if it's an outgoing transfer, check its state to enable buttons
+                        if NETWORKING_AVAILABLE and state: # Use Enum comparison when possible
+                            if state == TransferState.IN_PROGRESS:
+                                can_pause = True
+                                logger.debug(f"  -> State is IN_PROGRESS, enabling PAUSE.")
+                            elif state == TransferState.PAUSED:
+                                can_resume = True
+                                logger.debug(f"  -> State is PAUSED, enabling RESUME.")
+                        # Add dummy mode check if necessary, though ideally TransferState is available
+                        # elif not NETWORKING_AVAILABLE: ...
+
+                    else: # Direction is "receive" or unknown
+                         logger.debug(f"Transfer {transfer_id[:8]} is INCOMING or direction unknown. Pause/Resume buttons remain DISABLED.")
+                         # can_pause and can_resume explicitly remain False
+
+                    # --- Update Progress Bar ---
+                    progress = self.transfer_progress_cache.get(transfer_id, 0)
+                    progress = max(0, min(100, int(progress))) # Ensure valid integer 0-100
+                    self.progress_bar.setValue(progress)
+
+                    # --- Update Speed/ETA Display (applies regardless of direction) ---
+                    if transfer_id in self.transfer_speed_cache:
+                        is_paused = (state == TransferState.PAUSED) if NETWORKING_AVAILABLE and state else False
+                        speed_mbps = self.transfer_speed_cache.get(transfer_id, 0.0)
+
+                        if is_paused:
+                            self.speed_value.setText("PAUSED")
+                            self.time_value.setText("--:--:--")
+                        else:
+                            self.speed_value.setText(f"{speed_mbps:.2f} MB/s")
+                            # Calculate ETA only if speed > 0 and sizes are valid
+                            if speed_mbps > 0 and total_size > 0 and transferred_size <= total_size:
+                                try:
+                                    bytes_remaining = total_size - transferred_size
+                                    # Avoid division by zero for speed just in case
+                                    if speed_mbps > 1e-6: # Check for very small non-zero speed
+                                        eta_seconds = bytes_remaining / (speed_mbps * 1024 * 1024)
+                                        eta_hours = int(eta_seconds // 3600)
+                                        eta_minutes = int((eta_seconds % 3600) // 60)
+                                        eta_seconds_rem = int(eta_seconds % 60)
+                                        self.time_value.setText(f"{eta_hours:02d}:{eta_minutes:02d}:{eta_seconds_rem:02d}")
+                                    else:
+                                        self.time_value.setText("∞") # Indicate infinite time if speed is effectively zero
+                                except (OverflowError, ValueError, ZeroDivisionError):
+                                    logger.warning(f"Calculation error for ETA on transfer {transfer_id[:8]}", exc_info=False)
+                                    self.time_value.setText("Error")
+                            else:
+                                self.time_value.setText("--:--:--") # No ETA if speed is 0 or sizes invalid
+
+                    else:
+                         # No speed info cached yet
+                         self.speed_value.setText("-- MB/s")
+                         self.time_value.setText("--:--:--")
+
                 else:
-                    self.time_value.setText("--:--:--")
+                    # Transfer object not found in active_transfers (likely completed/failed)
+                    logger.warning(f"Transfer object for ID {transfer_id} not found in active_transfers during selection change.")
+                    progress = self.transfer_progress_cache.get(transfer_id, 100) # Default to 100% if gone
+                    self.progress_bar.setValue(progress)
+                    # Keep buttons disabled as the transfer is no longer active
 
-        self.pause_button.setEnabled(can_pause); self.resume_button.setEnabled(can_resume); self.progress_bar.setValue(progress)
+            else:
+                logger.warning("Selected transfer item has no transfer_id in UserRole data.")
+                # Keep buttons disabled and UI reset
 
+        # --- Final Update to Button States ---
+        # These variables (can_pause, can_resume) will *only* be True if the
+        # direction was checked and found to be 'send' AND the state matched.
+        # Otherwise, they remain False from the initialization.
+        self.pause_button.setEnabled(can_pause)
+        self.resume_button.setEnabled(can_resume)
 
     def connect_to_selected_peer(self):
         # ... (keep existing connect_to_selected_peer code) ...

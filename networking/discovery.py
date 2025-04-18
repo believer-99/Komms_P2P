@@ -2,9 +2,13 @@ import asyncio
 import socket
 import json
 import logging
-import netifaces
 import time 
-
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    
 from networking.utils import get_own_ip
 from networking.shared_state import user_data, shutdown_event, message_queue
 
@@ -35,7 +39,7 @@ class PeerDiscovery:
         self.own_ip = None
         self.receive_transport = None
         self._broadcast_sock = None
-        self._last_peer_list_state_json = "null" # To check if list actually changed
+        self._last_peer_list_state_json = "null" 
 
     async def _initialize_resources(self):
         """Initialize network resources."""
@@ -61,9 +65,14 @@ class PeerDiscovery:
              logger.error(f"Error checking/notifying peer update: {e}")
 
     async def send_broadcasts(self):
-        """Periodically sends broadcast messages."""
+        """Periodically sends broadcast messages using psutil to find interfaces."""
         if not self._broadcast_sock: await self._initialize_resources()
-        if not self.running: return 
+        if not self.running: return
+
+        if not PSUTIL_AVAILABLE:
+            logger.error("psutil is not available. Cannot send broadcasts effectively.")
+            self.running = False
+            return
 
         sock = self._broadcast_sock
         sent_at_least_once = False
@@ -71,36 +80,58 @@ class PeerDiscovery:
             while self.running and not shutdown_event.is_set():
                 sent_this_round = False
                 try:
-                    if self.own_ip is None: self.own_ip = await get_own_ip() 
+                    if self.own_ip is None: self.own_ip = await get_own_ip()
                     username = user_data.get("original_username", "unknown")
                     message = json.dumps({"ip": self.own_ip, "username": username}).encode()
-                    for interface in netifaces.interfaces():
-                        if interface == 'lo' or not (netifaces.ifaddresses(interface).get(netifaces.AF_INET)): continue
-                        try:
-                            addrs = netifaces.ifaddresses(interface).get(netifaces.AF_INET)
-                            if addrs:
-                                broadcast_addr = addrs[0].get("broadcast")
-                                if broadcast_addr:
-                                    sock.sendto(message, (broadcast_addr, self.broadcast_port))
-                                    logger.debug(f"Broadcast sent on {interface} to {broadcast_addr}:{self.broadcast_port}")
-                                    sent_this_round = True; sent_at_least_once = True
-                        except OSError as e:
-                             if e.errno in [101, 99]: logger.debug(f"Broadcast OS error on {interface}: {e.strerror}")
-                             else: logger.warning(f"Network error broadcasting on {interface}: {e}")
-                        except KeyError: logger.debug(f"No broadcast address for {interface}")
-                        except Exception as e: logger.warning(f"Unexpected error broadcasting on {interface}: {e}")
-                except Exception as outer_e: logger.error(f"Error preparing broadcast message: {outer_e}")
-                if not sent_this_round and sent_at_least_once: logger.warning("Could not send broadcast on any interface this round.")
-                elif not sent_at_least_once and not sent_this_round: logger.warning("Could not send initial broadcast on any interface.")
 
-                try: await asyncio.wait_for(shutdown_event.wait(), timeout=self.broadcast_interval)
-                except asyncio.TimeoutError: continue
-                except asyncio.CancelledError: break
+                    # --- Use psutil to iterate interfaces ---
+                    addresses = psutil.net_if_addrs()
+                    stats = psutil.net_if_stats()
+
+                    for interface, snics in addresses.items():
+                        # Check if interface is up and not loopback
+                        if interface in stats and getattr(stats[interface], 'isup') and interface != 'lo':
+                            for snic in snics:
+                                # Find IPv4 address and its broadcast address
+                                if snic.family == socket.AF_INET and snic.broadcast:
+                                    broadcast_addr = snic.broadcast
+                                    try:
+                                        sock.sendto(message, (broadcast_addr, self.broadcast_port))
+                                        logger.debug(f"Broadcast sent on {interface} to {broadcast_addr}:{self.broadcast_port}")
+                                        sent_this_round = True
+                                        sent_at_least_once = True
+                                    except OSError as e:
+                                        # Common errors on Windows when interface is unusable
+                                        if e.errno in [10051, 10065, 101, 99, 19] or "Network is unreachable" in str(e) or "Invalid argument" in str(e):
+                                            logger.debug(f"Broadcast OS error on {interface} (broadcast to {broadcast_addr}): {e.strerror}")
+                                        else:
+                                             logger.warning(f"Network error broadcasting on {interface} to {broadcast_addr}: {e}")
+                                    except Exception as e:
+                                         logger.warning(f"Unexpected error broadcasting on {interface} to {broadcast_addr}: {e}")
+                                    # Don't need to break inner loop, might have multiple IPs on one interface
+
+                except Exception as outer_e:
+                    logger.error(f"Error preparing or iterating interfaces for broadcast: {outer_e}", exc_info=True)
+
+                if not sent_this_round and sent_at_least_once:
+                    logger.warning("Could not send broadcast on any suitable interface this round.")
+                elif not sent_at_least_once and not sent_this_round:
+                     logger.warning("Could not send initial broadcast on any suitable interface.")
+
+                try:
+                    await asyncio.wait_for(shutdown_event.wait(), timeout=self.broadcast_interval)
+                except asyncio.TimeoutError:
+                    continue
+                except asyncio.CancelledError:
+                    break
                 break # Shutdown triggered
 
-        except asyncio.CancelledError: logger.info("send_broadcasts task cancelled.")
-        except Exception as e: logger.exception(f"Fatal error in send_broadcasts loop: {e}")
-        finally: logger.info("send_broadcasts loop finished.") # Socket closed in stop()
+        except asyncio.CancelledError:
+            logger.info("send_broadcasts task cancelled.")
+        except Exception as e:
+            logger.exception(f"Fatal error in send_broadcasts loop: {e}")
+        finally:
+            logger.info("send_broadcasts loop finished.")
 
     async def receive_broadcasts(self):
         """Listens for broadcast messages using asyncio DatagramProtocol."""

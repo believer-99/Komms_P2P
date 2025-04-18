@@ -1,13 +1,15 @@
-# networking/utils.py
 import socket
 import asyncio
 import logging
-import netifaces # For more robust IP detection
-import os # Needed for get_config_directory fallback
+import os
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    # Keep the warning if desired, or handle silently
+    print("WARNING: psutil not found. IP/Network discovery will be limited.")
 
-# --- Import necessary shared state ---
-# Adjust imports based on where these state variables actually live
-# Assuming they are directly in shared_state.py
 try:
     from networking.shared_state import (
         peer_usernames, peer_device_ids, user_data, connections
@@ -20,56 +22,84 @@ except ImportError:
     _networking_state_available = False
 
 
+
 logger = logging.getLogger(__name__) # Use module-specific logger
 
 async def get_own_ip():
     """Get the local IP address used for external communication.
-       Tries multiple methods for robustness."""
-    # 1. Try UDP connection trick (often works)
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.settimeout(0.1)
-    try:
-        s.connect(('10.254.254.254', 1)) # Doesn't need to be reachable
-        ip = s.getsockname()[0]
-        if ip and not ip.startswith('127.'): # Basic check for loopback
-            logger.debug(f"Determined own IP via UDP trick: {ip}")
-            return ip
-    except Exception:
-        logger.debug("UDP trick failed to get IP.")
-    finally:
-        s.close()
+       Uses psutil for robustness."""
 
-    # 2. Try netifaces (more reliable on multi-interface systems)
+    if not PSUTIL_AVAILABLE:
+        logger.warning("psutil not available. Attempting fallback methods for IP.")
+        # --- Keep the UDP trick as a fallback ---
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.1)
+        try:
+            # Doesn't need to be reachable
+            s.connect(('10.254.254.254', 1))
+            ip = s.getsockname()[0]
+            if ip and not ip.startswith('127.'):
+                logger.debug(f"Determined own IP via UDP trick (psutil fallback): {ip}")
+                return ip
+        except Exception:
+            logger.debug("UDP trick failed (psutil fallback).")
+        finally:
+            s.close()
+
+        # --- Keep hostname resolution as another fallback ---
+        try:
+            hostname = socket.gethostname()
+            ip = socket.gethostbyname(hostname)
+            if ip and not ip.startswith('127.'):
+                 logger.debug(f"Determined own IP via hostname (psutil fallback): {ip}")
+                 return ip
+        except Exception:
+            logger.warning("Could not resolve hostname (psutil fallback).")
+
+        # --- Final fallback ---
+        logger.error("Could not determine non-loopback IP using fallback methods.")
+        return "127.0.0.1"
+
+    # --- Primary Method using psutil ---
     try:
-        for interface in netifaces.interfaces():
-            # Skip loopback and docker interfaces usually
-            if interface.startswith('lo') or interface.startswith('docker'):
-                continue
-            ifaddresses = netifaces.ifaddresses(interface)
-            if netifaces.AF_INET in ifaddresses:
-                for addr_info in ifaddresses[netifaces.AF_INET]:
-                    ip = addr_info.get('addr')
-                    # Check for valid private/public IPs, avoid link-local unless necessary
-                    if ip and not ip.startswith('127.') and not ip.startswith('169.254.'):
-                        logger.debug(f"Determined own IP via netifaces ({interface}): {ip}")
-                        return ip
-    except ImportError:
-        logger.debug("netifaces not found, skipping netifaces IP detection.") # Downgrade to debug if netifaces is optional
+        # Get all network interface addresses
+        addresses = psutil.net_if_addrs()
+        # Get statistics to check interface status (up/down)
+        stats = psutil.net_if_stats()
+
+        candidate_ips = []
+
+        for interface, snics in addresses.items():
+            # Check if interface is up and not loopback
+            if interface in stats and getattr(stats[interface], 'isup') and interface != 'lo':
+                logger.debug(f"Checking interface: {interface} (UP)")
+                for snic in snics:
+                    # Check for IPv4 addresses
+                    if snic.family == socket.AF_INET:
+                        ip_addr = snic.address
+                        # Prioritize non-loopback, non-link-local addresses
+                        if ip_addr and not ip_addr.startswith('127.') and not ip_addr.startswith('169.254.'):
+                            logger.debug(f"  Found potential external IP: {ip_addr} on {interface}")
+                            candidate_ips.append(ip_addr)
+                        elif ip_addr:
+                             logger.debug(f"  Found other IPv4: {ip_addr} on {interface} (lower priority)")
+
+
+        if candidate_ips:
+            # Often the first non-loopback IP found is the desired one, but this isn't guaranteed.
+            # For simplicity, we'll return the first candidate found.
+            # More complex logic could try to ping a public address from each candidate.
+            selected_ip = candidate_ips[0]
+            logger.info(f"Determined own IP via psutil: {selected_ip}")
+            return selected_ip
+        else:
+            logger.warning("psutil found interfaces but no suitable non-loopback IPv4 address.")
+
     except Exception as e:
-        logger.warning(f"Error using netifaces: {e}")
+        logger.error(f"Error using psutil for IP detection: {e}", exc_info=True)
 
-    # 3. Fallback to hostname resolution
-    try:
-        hostname = socket.gethostname()
-        ip = socket.gethostbyname(hostname)
-        if ip and not ip.startswith('127.'):
-             logger.debug(f"Determined own IP via hostname: {ip}")
-             return ip
-    except Exception:
-        logger.warning("Could not resolve hostname.")
-
-    # 4. Final fallback
-    logger.warning("Could not determine non-loopback IP, falling back to 127.0.0.1.")
+    # --- Fallback to 127.0.0.1 if psutil fails ---
+    logger.warning("Could not determine non-loopback IP using psutil, falling back to 127.0.0.1.")
     return "127.0.0.1"
 
 
