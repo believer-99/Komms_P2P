@@ -14,14 +14,12 @@ A decentralized, peer-to-peer application built in Python that enables users on 
   - [Frontend (GUI & CLI)](#frontend-gui--cli)
   - [Backend](#backend)
 - [Technologies Used](#technologies-used)
-- [Folder Structure](#folder-structure)
 - [Local Setup](#local-setup)
   - [Prerequisites](#prerequisites)
   - [Steps to Setup](#steps-to-setup)
 - [Usage](#usage)
 - [Testing (Optional)](#testing-optional)
 - [Contributing](#contributing)
-- [License](#license)
 
 ## Project Description
 
@@ -50,7 +48,7 @@ Watch a demonstration of the application on YouTube:
 
 [![P2P Chat App Demo Video](https://img.youtube.com/vi/tHedlnqahpQ/hqdefault.jpg)]([https://www.youtube.com/watch?v=tHedlnqahpQ])
 
-*(Click the image above or [this link](https://www.youtube.com/watch?v=YOUR_YOUTUBE_VIDEO_ID_HERE) to watch the video on YouTube. Please replace `YOUR_YOUTUBE_VIDEO_ID_HERE` with the actual ID of your YouTube video.)*
+*(Click the image above or [this link]([https://www.youtube.com/watch?v=tHedlnqahpQ]) to watch the video on YouTube.)
 
 ## Features Implemented
 
@@ -112,35 +110,6 @@ Watch a demonstration of the application on YouTube:
 -   **logging**: For detailed application logging.
 
 See `requirements.txt` for the full list of dependencies and versions.
-
-## Folder Structure
-
-.
-├── .gitignore
-├── README.md
-├── assets/ # Screenshots, demo video, icons
-│ ├── demo_video/ # Local video files (if any kept)
-│ └── icon/
-├── main.py # Entry point for the CLI version
-├── networking/ # Core networking logic
-│ ├── discovery.py
-│ ├── file_transfer.py
-│ ├── groups.py
-│ ├── messaging.py
-│ ├── shared_state.py
-│ ├── testing/ # Basic socket test scripts
-│ └── utils.py
-├── p2p_app__.py # Entry point for the PyQt6 GUI application
-├── requirements.txt # Project dependencies
-├── security/ # Security-related modules
-│ ├── cert_validation.py
-│ └── path_security.py
-├── tests/ # Unit tests
-│ └── test_file_validation.py
-├── ui/ # UI-specific components
-│ └── transfer_controls.py
-└── utils/ # Utility modules
-└── file_validation.py
 
 
 ## Local Setup
