@@ -46,9 +46,9 @@ P2P Chat and File Transfer is a decentralized, peer-to-peer application built in
 
 Watch a demonstration of the application on YouTube:
 
-[![P2P Chat App Demo Video](https://img.youtube.com/vi/tHedlnqahpQ/hqdefault.jpg)]([https://www.youtube.com/watch?v=tHedlnqahpQ])
+[![P2P Chat App Demo Video](https://img.youtube.com/vi/tHedlnqahpQ/hqdefault.jpg)](https://www.youtube.com/watch?v=tHedlnqahpQ)
 
-*(Click the image above or [this link]([https://www.youtube.com/watch?v=tHedlnqahpQ]) to watch the video on YouTube.)
+*(Click the image above or [this link](https://www.youtube.com/watch?v=tHedlnqahpQ) to watch the video on YouTube.)*
 
 ## Features Implemented
 
